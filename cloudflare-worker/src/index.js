@@ -77,7 +77,8 @@ const commandDefinitions = [
     description: 'DREW league assistant',
     options: [
       { type: 1, name: 'help', description: 'Show DREW command status and channel purposes' },
-      { type: 1, name: 'setup-check', description: 'Commissioner-only check of league roles and channels' }
+      { type: 1, name: 'setup-check', description: 'Commissioner-only check of league roles and channels' },
+      { type: 1, name: 'weekly-slate', description: 'Show the latest post in the weekly slate channel' }
     ]
   }
 ];
@@ -104,7 +105,7 @@ async function registerCommands(env) {
 }
 
 function ephemeral(content) {
-  return json({ type: 4, data: { content, flags: EPHEMERAL } });
+  return json({ type: 4, data: { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } } });
 }
 
 async function discordGet(path, token) {
@@ -118,7 +119,6 @@ async function discordGet(path, token) {
 async function runSetupCheck(interaction, env) {
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) {
     return ephemeral('DREW setup is incomplete. Ask the Commissioner to check the bot configuration.');
-    return 'DREW setup is incomplete. Ask the Commissioner to check the bot configuration.';
   }
   try {
     const [roles, channels] = await Promise.all([
@@ -129,7 +129,6 @@ async function runSetupCheck(interaction, env) {
     const memberRoleIds = interaction.member?.roles ?? [];
     if (!commissioner || !memberRoleIds.includes(commissioner.id)) {
       return ephemeral('This setup check is available to the Commissioner role.');
-      return 'This setup check is available to the Commissioner role.';
     }
 
     const missingRoles = REQUIRED_ROLES.filter((expected) =>
@@ -159,34 +158,58 @@ async function runSetupCheck(interaction, env) {
       : `Franchise chats: found ${franchiseChannelCount} text channels under a Franchise Chats category; expected 8.`);
     lines.push('This check reads role and channel names only. It does not inspect message history or change league data.');
     return ephemeral(lines.join('\n'));
-    return lines.join('\n');
   } catch (error) {
     console.error(`Setup check could not read server configuration: ${error.message}`);
     return ephemeral('DREW could not complete the setup check. Ask the Commissioner to review its server access and configuration.');
-    return 'DREW could not complete the setup check. Ask the Commissioner to review its server access and configuration.';
   }
 }
 
-async function finishDeferredSetupCheck(interaction, env) {
-  let content = 'DREW could not complete the setup check. Ask the Commissioner to review its server access and configuration.';
-  try {
-    content = await runSetupCheck(interaction, env);
-  } catch (error) {
-    console.error(`Deferred setup check failed: ${error.message}`);
+async function getWeeklySlate(env) {
+  if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) {
+    return 'DREW setup is incomplete. Ask the Commissioner to check the bot configuration.';
   }
+  try {
+    const channels = await discordGet(`/guilds/${env.DISCORD_GUILD_ID}/channels`, env.DISCORD_BOT_TOKEN);
+    const channel = channels.find((candidate) => [0, 5].includes(candidate.type)
+      && candidate.name.toLowerCase().replace(/[^a-z0-9]/g, '') === 'weeklyslate');
+    if (!channel) return 'DREW could not find the #weekly-slate channel.';
 
+    const messages = await discordGet(`/channels/${channel.id}/messages?limit=10`, env.DISCORD_BOT_TOKEN);
+    const latest = messages.find((message) => message.content?.trim() || message.embeds?.length);
+    if (!latest) return 'No weekly slate has been posted yet in #weekly-slate.';
+
+    const parts = [latest.content?.trim()];
+    for (const embed of latest.embeds ?? []) {
+      const embedText = [embed.title, embed.description,
+        ...(embed.fields ?? []).flatMap((field) => [field.name, field.value])]
+        .filter(Boolean).join('\n');
+      if (embedText) parts.push(embedText);
+    }
+    let slate = parts.filter(Boolean).join('\n\n');
+    if (!slate) return 'The latest weekly slate post has no readable text.';
+    if (slate.length > 1750) slate = `${slate.slice(0, 1747)}...`;
+    const messageLink = `https://discord.com/channels/${env.DISCORD_GUILD_ID}/${channel.id}/${latest.id}`;
+    return `**Current weekly slate**\n${slate}\n\n[Open the post in #weekly-slate](${messageLink})`;
+  } catch (error) {
+    console.error(`Weekly slate could not be read: ${error.message}`);
+    return 'DREW could not read #weekly-slate. Check that the bot can view the channel and read its message history.';
+  }
+}
+
+async function finishDeferredWeeklySlate(interaction, env) {
+  const content = await getWeeklySlate(env);
   const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
   try {
     const response = await fetch(url, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content })
+      body: JSON.stringify({ content, allowed_mentions: { parse: [] } })
     });
     if (!response.ok) {
-      console.error(`Setup check result could not be delivered; Discord returned HTTP ${response.status}.`);
+      console.error(`Weekly slate result could not be delivered; Discord returned HTTP ${response.status}.`);
     }
   } catch (error) {
-    console.error(`Setup check result delivery failed: ${error.message}`);
+    console.error(`Weekly slate result delivery failed: ${error.message}`);
   }
 }
 
@@ -225,9 +248,12 @@ export default {
 
     const subcommand = interaction.data.options?.[0]?.name;
     if (subcommand === 'help') {
+      // Refresh the guild command list after a deployment adds or changes commands.
+      ctx.waitUntil(registerCommands(env));
       return ephemeral([
         '**DREW setup build**',
         '`/drew setup-check` — Commissioner-only check for the league roles and channels.',
+        '`/drew weekly-slate` — privately shows the latest post from #weekly-slate.',
         '`#weekly-slate` — the actionable matchups and deadlines for the current game week.',
         '`#schedule` — the broader season calendar and date changes.',
         '`#game-reports` — the route for completed-game report status; evidence workflows are not enabled yet.',
@@ -235,12 +261,11 @@ export default {
       ].join('\n'));
     }
     if (subcommand === 'setup-check') return runSetupCheck(interaction, env);
-    if (subcommand === 'setup-check') {
-      // Acknowledge within Discord's short initial-response deadline, then do
-      // the slower role/channel lookups and edit the deferred response.
-      ctx.waitUntil(finishDeferredSetupCheck(interaction, env));
+    if (subcommand === 'weekly-slate') {
+      ctx.waitUntil(finishDeferredWeeklySlate(interaction, env));
       return json({ type: 5, data: { flags: EPHEMERAL } });
     }
-    return ephemeral('Choose `/drew help` or `/drew setup-check`.');
+    return ephemeral('Choose `/drew help`, `/drew setup-check`, or `/drew weekly-slate`.');
   }
 };
+
