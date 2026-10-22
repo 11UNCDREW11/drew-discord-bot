@@ -118,6 +118,7 @@ async function discordGet(path, token) {
 async function runSetupCheck(interaction, env) {
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) {
     return ephemeral('DREW setup is incomplete. Ask the Commissioner to check the bot configuration.');
+    return 'DREW setup is incomplete. Ask the Commissioner to check the bot configuration.';
   }
   try {
     const [roles, channels] = await Promise.all([
@@ -128,6 +129,7 @@ async function runSetupCheck(interaction, env) {
     const memberRoleIds = interaction.member?.roles ?? [];
     if (!commissioner || !memberRoleIds.includes(commissioner.id)) {
       return ephemeral('This setup check is available to the Commissioner role.');
+      return 'This setup check is available to the Commissioner role.';
     }
 
     const missingRoles = REQUIRED_ROLES.filter((expected) =>
@@ -157,9 +159,34 @@ async function runSetupCheck(interaction, env) {
       : `Franchise chats: found ${franchiseChannelCount} text channels under a Franchise Chats category; expected 8.`);
     lines.push('This check reads role and channel names only. It does not inspect message history or change league data.');
     return ephemeral(lines.join('\n'));
+    return lines.join('\n');
   } catch (error) {
     console.error(`Setup check could not read server configuration: ${error.message}`);
     return ephemeral('DREW could not complete the setup check. Ask the Commissioner to review its server access and configuration.');
+    return 'DREW could not complete the setup check. Ask the Commissioner to review its server access and configuration.';
+  }
+}
+
+async function finishDeferredSetupCheck(interaction, env) {
+  let content = 'DREW could not complete the setup check. Ask the Commissioner to review its server access and configuration.';
+  try {
+    content = await runSetupCheck(interaction, env);
+  } catch (error) {
+    console.error(`Deferred setup check failed: ${error.message}`);
+  }
+
+  const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  try {
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    if (!response.ok) {
+      console.error(`Setup check result could not be delivered; Discord returned HTTP ${response.status}.`);
+    }
+  } catch (error) {
+    console.error(`Setup check result delivery failed: ${error.message}`);
   }
 }
 
@@ -208,7 +235,12 @@ export default {
       ].join('\n'));
     }
     if (subcommand === 'setup-check') return runSetupCheck(interaction, env);
+    if (subcommand === 'setup-check') {
+      // Acknowledge within Discord's short initial-response deadline, then do
+      // the slower role/channel lookups and edit the deferred response.
+      ctx.waitUntil(finishDeferredSetupCheck(interaction, env));
+      return json({ type: 5, data: { flags: EPHEMERAL } });
+    }
     return ephemeral('Choose `/drew help` or `/drew setup-check`.');
   }
 };
-
