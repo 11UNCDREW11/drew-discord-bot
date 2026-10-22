@@ -25,19 +25,49 @@ function hexToBytes(hex) {
 async function verifyDiscordRequest(request, body, publicKey) {
   const signature = request.headers.get('x-signature-ed25519');
   const timestamp = request.headers.get('x-signature-timestamp');
-  if (!signature || !timestamp || !publicKey) return false;
+  const reject = (reason, details = {}) => {
+    // Do not log the signature, public key, or request body.
+    console.warn('Discord interaction signature rejected.', { reason, ...details });
+    return false;
+  };
+  if (!signature || !timestamp || !publicKey) {
+    return reject('Required signature data is missing.', {
+      hasSignature: Boolean(signature),
+      hasTimestamp: Boolean(timestamp),
+      hasPublicKey: Boolean(publicKey),
+      publicKeyLength: typeof publicKey === 'string' ? publicKey.length : 0
+    });
+  }
   const timestampSeconds = Number(timestamp);
-  if (!Number.isFinite(timestampSeconds) || Math.abs(Date.now() / 1000 - timestampSeconds) > 300) return false;
+  const timestampAgeSeconds = Date.now() / 1000 - timestampSeconds;
+  if (!Number.isFinite(timestampSeconds) || Math.abs(timestampAgeSeconds) > 300) {
+    return reject('Signature timestamp is invalid or outside the five-minute window.', {
+      timestampAgeSeconds: Number.isFinite(timestampAgeSeconds) ? Math.round(timestampAgeSeconds) : null
+    });
+  }
   try {
-    const key = await crypto.subtle.importKey('raw', hexToBytes(publicKey), { name: 'Ed25519' }, false, ['verify']);
-    return await crypto.subtle.verify(
+    const publicKeyBytes = hexToBytes(publicKey);
+    const signatureBytes = hexToBytes(signature);
+    if (publicKeyBytes.length !== 32 || signatureBytes.length !== 64) {
+      return reject('Signature key or signature has an unexpected length.', {
+        publicKeyBytesLength: publicKeyBytes.length,
+        signatureBytesLength: signatureBytes.length
+      });
+    }
+    const key = await crypto.subtle.importKey('raw', publicKeyBytes, { name: 'Ed25519' }, false, ['verify']);
+    const isValid = await crypto.subtle.verify(
       { name: 'Ed25519' },
       key,
-      hexToBytes(signature),
+      signatureBytes,
       new TextEncoder().encode(timestamp + body)
     );
-  } catch {
-    return false;
+    if (!isValid) return reject('Ed25519 signature does not match the configured public key and request body.');
+    return true;
+  } catch (error) {
+    return reject('Signature verification could not run.', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+      errorMessage: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 }
 
