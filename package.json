@@ -1,0 +1,16 @@
+{
+  "name": "autobot-drew",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DREW, the Discord operations bot for the AUTOBOT NBA 2K league.",
+  "engines": { "node": ">=24.17.0" },
+  "scripts": {
+    "register": "node src/register-commands.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.4.7"
+  }
+}

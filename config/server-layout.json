@@ -1,0 +1,32 @@
+{
+  "requiredRoles": [
+    "commissioner",
+    "gm",
+    "captain",
+    "freeagent",
+    "player"
+  ],
+  "requiredTextChannels": [
+    "welcome",
+    "rules",
+    "announcements",
+    "general-chat",
+    "schedule",
+    "standings",
+    "league-stats",
+    "weekly-slate",
+    "transactions",
+    "gm-chat",
+    "captains-chat",
+    "franchise-chat-1",
+    "franchise-chat-2",
+    "franchise-chat-3",
+    "franchise-chat-4",
+    "franchise-chat-5",
+    "franchise-chat-6",
+    "franchise-chat-7",
+    "franchise-chat-8",
+    "game-reports",
+    "contact-commissioner"
+  ]
+}
