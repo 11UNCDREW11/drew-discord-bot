@@ -2,11 +2,10 @@ const REQUIRED_ROLES = ['commissioner', 'gm', 'captain', 'freeagent', 'player'];
 const REQUIRED_CHANNELS = [
   'welcome', 'rules', 'announcements', 'generalchat', 'schedule', 'standings',
   'leaguestats', 'weekly slate', 'transactions', 'gmchat', 'captainschat',
-  'franchisechat1', 'franchisechat2', 'franchisechat3', 'franchisechat4',
-  'franchisechat5', 'franchisechat6', 'franchisechat7', 'franchisechat8',
   'gamereports', 'contactcommissioner'
 ].map((name) => name.replace(/[^a-z0-9]/g, ''));
 const EPHEMERAL = 64;
+const normalizeName = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -138,6 +137,14 @@ async function runSetupCheck(interaction, env) {
       !channels.some((channel) => [0, 5].includes(channel.type)
         && channel.name.toLowerCase().replace(/[^a-z0-9]/g, '') === expected)
     );
+    const franchiseCategoryIds = new Set(channels
+      .filter((channel) => channel.type === 4
+        && normalizeName(channel.name).includes('franchise')
+        && normalizeName(channel.name).includes('chat'))
+      .map((category) => category.id));
+    const franchiseChannelCount = channels.filter((channel) =>
+      [0, 5].includes(channel.type) && franchiseCategoryIds.has(channel.parent_id)
+    ).length;
     const lines = ['**DREW server setup check**'];
     lines.push(missingRoles.length
       ? `Missing roles: ${missingRoles.map((name) => `\`${name}\``).join(', ')}`
@@ -145,6 +152,9 @@ async function runSetupCheck(interaction, env) {
     lines.push(missingChannels.length
       ? `Missing text channels: ${missingChannels.map((name) => `\`#${name}\``).join(', ')}`
       : `Text channels: all ${REQUIRED_CHANNELS.length} required channels found.`);
+    lines.push(franchiseChannelCount === 8
+      ? 'Franchise chats: all 8 text channels found under a Franchise Chats category.'
+      : `Franchise chats: found ${franchiseChannelCount} text channels under a Franchise Chats category; expected 8.`);
     lines.push('This check reads role and channel names only. It does not inspect message history or change league data.');
     return ephemeral(lines.join('\n'));
   } catch (error) {
