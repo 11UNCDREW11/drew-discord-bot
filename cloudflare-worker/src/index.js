@@ -78,7 +78,8 @@ const commandDefinitions = [
     options: [
       { type: 1, name: 'help', description: 'Show DREW command status and channel purposes' },
       { type: 1, name: 'setup-check', description: 'Commissioner-only check of league roles and channels' },
-      { type: 1, name: 'weekly-slate', description: 'Show the latest post in the weekly slate channel' }
+      { type: 1, name: 'weekly-slate', description: 'Show the latest post in the weekly slate channel' },
+      { type: 1, name: 'schedule', description: 'Show the latest post in the schedule channel' }
     ]
   }
 ];
@@ -164,19 +165,19 @@ async function runSetupCheck(interaction, env) {
   }
 }
 
-async function getWeeklySlate(env) {
+async function getLatestChannelPost(env, channelName, heading) {
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) {
     return 'DREW setup is incomplete. Ask the Commissioner to check the bot configuration.';
   }
   try {
     const channels = await discordGet(`/guilds/${env.DISCORD_GUILD_ID}/channels`, env.DISCORD_BOT_TOKEN);
     const channel = channels.find((candidate) => [0, 5].includes(candidate.type)
-      && candidate.name.toLowerCase().replace(/[^a-z0-9]/g, '') === 'weeklyslate');
-    if (!channel) return 'DREW could not find the #weekly-slate channel.';
+      && normalizeName(candidate.name) === normalizeName(channelName));
+    if (!channel) return `DREW could not find the #${channelName} channel.`;
 
     const messages = await discordGet(`/channels/${channel.id}/messages?limit=10`, env.DISCORD_BOT_TOKEN);
     const latest = messages.find((message) => message.content?.trim() || message.embeds?.length);
-    if (!latest) return 'No weekly slate has been posted yet in #weekly-slate.';
+    if (!latest) return `No post with readable text has been found in #${channelName} yet.`;
 
     const parts = [latest.content?.trim()];
     for (const embed of latest.embeds ?? []) {
@@ -186,18 +187,18 @@ async function getWeeklySlate(env) {
       if (embedText) parts.push(embedText);
     }
     let slate = parts.filter(Boolean).join('\n\n');
-    if (!slate) return 'The latest weekly slate post has no readable text.';
+    if (!slate) return `The latest post in #${channelName} has no readable text.`;
     if (slate.length > 1750) slate = `${slate.slice(0, 1747)}...`;
     const messageLink = `https://discord.com/channels/${env.DISCORD_GUILD_ID}/${channel.id}/${latest.id}`;
-    return `**Current weekly slate**\n${slate}\n\n[Open the post in #weekly-slate](${messageLink})`;
+    return `**${heading}**\n${slate}\n\n[Open the post in #${channelName}](${messageLink})`;
   } catch (error) {
-    console.error(`Weekly slate could not be read: ${error.message}`);
-    return 'DREW could not read #weekly-slate. Check that the bot can view the channel and read its message history.';
+    console.error(`#${channelName} could not be read: ${error.message}`);
+    return `DREW could not read #${channelName}. Check that the bot can view the channel and read its message history.`;
   }
 }
 
-async function finishDeferredWeeklySlate(interaction, env) {
-  const content = await getWeeklySlate(env);
+async function finishDeferredChannelPost(interaction, env, channelName, heading) {
+  const content = await getLatestChannelPost(env, channelName, heading);
   const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
   try {
     const response = await fetch(url, {
@@ -206,10 +207,10 @@ async function finishDeferredWeeklySlate(interaction, env) {
       body: JSON.stringify({ content, allowed_mentions: { parse: [] } })
     });
     if (!response.ok) {
-      console.error(`Weekly slate result could not be delivered; Discord returned HTTP ${response.status}.`);
+      console.error(`The #${channelName} result could not be delivered; Discord returned HTTP ${response.status}.`);
     }
   } catch (error) {
-    console.error(`Weekly slate result delivery failed: ${error.message}`);
+    console.error(`The #${channelName} result delivery failed: ${error.message}`);
   }
 }
 
@@ -254,6 +255,7 @@ export default {
         '**DREW setup build**',
         '`/drew setup-check` — Commissioner-only check for the league roles and channels.',
         '`/drew weekly-slate` — privately shows the latest post from #weekly-slate.',
+        '`/drew schedule` — privately shows the latest post from #schedule.',
         '`#weekly-slate` — the actionable matchups and deadlines for the current game week.',
         '`#schedule` — the broader season calendar and date changes.',
         '`#game-reports` — the route for completed-game report status; evidence workflows are not enabled yet.',
@@ -262,10 +264,14 @@ export default {
     }
     if (subcommand === 'setup-check') return runSetupCheck(interaction, env);
     if (subcommand === 'weekly-slate') {
-      ctx.waitUntil(finishDeferredWeeklySlate(interaction, env));
+      ctx.waitUntil(finishDeferredChannelPost(interaction, env, 'weekly-slate', 'Current weekly slate'));
       return json({ type: 5, data: { flags: EPHEMERAL } });
     }
-    return ephemeral('Choose `/drew help`, `/drew setup-check`, or `/drew weekly-slate`.');
+    if (subcommand === 'schedule') {
+      ctx.waitUntil(finishDeferredChannelPost(interaction, env, 'schedule', 'Current schedule'));
+      return json({ type: 5, data: { flags: EPHEMERAL } });
+    }
+    return ephemeral('Choose `/drew help`, `/drew setup-check`, `/drew weekly-slate`, or `/drew schedule`.');
   }
 };
 
