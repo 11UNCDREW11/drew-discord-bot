@@ -4,5 +4,18 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-22",
   "keep_vars": true,
-  "workers_dev": true
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "drew-league",
+      "database_id": "6b012c51-c222-4b60-b057-2c482bbd5bec"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SCREENSHOTS",
+      "bucket_name": "drew-screenshots"
+    }
+  ]
 }
