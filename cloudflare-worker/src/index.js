@@ -985,7 +985,7 @@ async function submitReport(interaction, env, opts) {
   const side = mine.has(fx.home_id) ? fx.home_id : mine.has(fx.away_id) ? fx.away_id : null;
   if (!side) return 'Only a captain or GM of one of these two franchises can report this game.';
 
-  const inCorrectionWindow = fx.status === 'Unreported' && Date.now() - Date.parse(fx.updated_at) <= CORRECTION_WINDOW_MS;
+  const inCorrectionWindow = fx.status === 'Unreported' && Date.now() - Date.parse(fx.unreported_at ?? fx.updated_at) <= CORRECTION_WINDOW_MS;
   if (fx.status === 'Final') return `\`${fixtureId}\` is already final. Contact the Commissioner for a correction.`;
   if (fx.status === 'Reported') return `\`${fixtureId}\` already has a report waiting. The other team can confirm or dispute it on the card in #game-reports.`;
   if (fx.status === 'Unreported' && !inCorrectionWindow) return `The correction window for \`${fixtureId}\` has closed. Contact the Commissioner.`;
@@ -1246,6 +1246,103 @@ async function reviewButton(interaction, env, action, reportId) {
   }
 }
 
+// ---------------------------------------------------------------- timers (step 3, runs every hour)
+
+const HOUR = 3600000;
+
+// Columns added after the first schema. ALTER fails harmlessly once a column exists.
+let schemaChecked = false;
+async function ensureSchema(db) {
+  if (schemaChecked) return;
+  for (const statement of [
+    'ALTER TABLE fixtures ADD COLUMN reminders_sent INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE fixtures ADD COLUMN unreported_at TEXT'
+  ]) {
+    try { await db.prepare(statement).run(); } catch { /* column already exists */ }
+  }
+  schemaChecked = true;
+}
+
+async function runTimers(env, nowMs = Date.now()) {
+  const db = requireDb(env);
+  await ensureSchema(db);
+  const now = new Date(nowMs).toISOString();
+  const actor = 'DREW (timer)';
+  const summary = { reminders: 0, unreported: 0, closed: 0, finalized: 0 };
+  const franchiseCache = new Map();
+  const franchise = async (id) => {
+    if (!franchiseCache.has(id)) franchiseCache.set(id, await franchiseOf(db, id));
+    return franchiseCache.get(id);
+  };
+  const post = async (message) => {
+    try { await postToChannel(env, 'game-reports', message); } catch (error) { console.error(`Timer post failed: ${error.message}`); }
+  };
+
+  // 1. Reminders at 12 and 20 hours, then the Unreported award at 24 hours.
+  const waiting = (await db.prepare(
+    "SELECT * FROM fixtures WHERE status = 'Time set' AND agreed_start_utc IS NOT NULL AND agreed_start_utc <= ?"
+  ).bind(new Date(nowMs - 12 * HOUR).toISOString()).all()).results ?? [];
+  for (const fx of waiting) {
+    const age = nowMs - Date.parse(fx.agreed_start_utc);
+    const home = await franchise(fx.home_id);
+    const away = await franchise(fx.away_id);
+    const mentions = [...new Set([...staffMentions(home), ...staffMentions(away)])];
+    const tags = mentions.map((id) => `<@${id}>`).join(' ');
+    const label = `**${fx.fixture_id}** · ${home?.name ?? fx.home_id} (home) vs ${away?.name ?? fx.away_id}`;
+
+    if (age >= 24 * HOUR) {
+      await db.batch([
+        db.prepare("UPDATE fixtures SET status = 'Unreported', result_type = 'Unreported', winner_id = home_id, home_score = NULL, away_score = NULL, unreported_at = ?, updated_at = ? WHERE fixture_id = ? AND status = 'Time set'")
+          .bind(now, now, fx.fixture_id),
+        audit(db, actor, 'fixtures', fx.fixture_id, 'status', 'Time set', 'Unreported', 'No report within 24 hours of the agreed start; home team awarded the win')
+      ]);
+      summary.unreported += 1;
+      await post({
+        content: `${label}\nNo report arrived within 24 hours of the agreed start, so **${home?.name ?? 'the home team'}** is awarded the win as **Unreported** (team record only, no player stats or games played).\nEither team can still submit the screenshot with \`/drew report\` until <t:${Math.floor((nowMs + CORRECTION_WINDOW_MS) / 1000)}:f>, and the real result will replace this. ${tags}`,
+        allowed_mentions: { users: mentions }
+      });
+      continue;
+    }
+    const due = age >= 20 * HOUR ? 2 : 1;
+    if ((fx.reminders_sent ?? 0) >= due) continue;
+    await db.batch([
+      db.prepare('UPDATE fixtures SET reminders_sent = ? WHERE fixture_id = ?').bind(due, fx.fixture_id),
+      audit(db, actor, 'fixtures', fx.fixture_id, 'reminders_sent', fx.reminders_sent ?? 0, due, `${due === 1 ? '12' : '20'}-hour reminder`)
+    ]);
+    summary.reminders += 1;
+    const deadline = Math.floor((Date.parse(fx.agreed_start_utc) + 24 * HOUR) / 1000);
+    await post({
+      content: `${label}\nReminder: no report yet. The winning team must submit the screenshot with \`/drew report\` by <t:${deadline}:f> (<t:${deadline}:R>). If nobody does, the home team gets the win as Unreported. ${tags}`,
+      allowed_mentions: { users: mentions }
+    });
+  }
+
+  // 2. Close correction windows after 48 hours: the Unreported result becomes final.
+  const expired = (await db.prepare(
+    "SELECT * FROM fixtures WHERE status = 'Unreported' AND COALESCE(unreported_at, updated_at) <= ?"
+  ).bind(new Date(nowMs - CORRECTION_WINDOW_MS).toISOString()).all()).results ?? [];
+  for (const fx of expired) {
+    await db.batch([
+      db.prepare("UPDATE fixtures SET status = 'Final', updated_at = ? WHERE fixture_id = ? AND status = 'Unreported'").bind(now, fx.fixture_id),
+      audit(db, actor, 'fixtures', fx.fixture_id, 'status', 'Unreported', 'Final', 'Correction window closed with no screenshot; Unreported result is final')
+    ]);
+    summary.closed += 1;
+  }
+
+  // 3. A clean report with no response for 48 hours becomes final
+  //    (24 hours to confirm or dispute, then 24 hours for contrary evidence).
+  const stale = (await db.prepare(
+    "SELECT * FROM reports WHERE state = 'Pending' AND opponent_response IS NULL AND submitted_at <= ?"
+  ).bind(new Date(nowMs - 48 * HOUR).toISOString()).all()).results ?? [];
+  for (const report of stale) {
+    await finalizeReport(env, db, report, actor, 'no response from the other team within 24 hours and no contrary evidence within the next 24');
+    summary.finalized += 1;
+  }
+
+  if (Object.values(summary).some(Boolean)) console.log('Timer run:', JSON.stringify(summary));
+  return summary;
+}
+
 // ---------------------------------------------------------------- admin
 
 const LEAGUE_ONLY_CHECKS = new Set(['Teams identified', 'Crew names', 'Winner matches the report', 'Every gamertag is linked', "Players are on their team's roster"]);
@@ -1472,6 +1569,10 @@ const HELP_TEXT = [
 // ---------------------------------------------------------------- router
 
 export default {
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runTimers(env).catch((error) => console.error(`Timer run failed: ${error.message}`)));
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/health') {
@@ -1533,6 +1634,8 @@ export default {
 
     const { path, opts } = readCommand(interaction);
     const command = path.join(' ');
+
+    if (env.DB) ctx.waitUntil(ensureSchema(env.DB).catch(() => {}));
 
     if (command === 'help') {
       // Refresh the guild command list after a deployment adds or changes commands.
