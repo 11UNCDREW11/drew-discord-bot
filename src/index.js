@@ -99,48 +99,49 @@ const TIMEZONE_CHOICES = Object.keys(TIMEZONES).map((key) => ({
 }));
 
 const TIER_CHOICES = [
-  { name: 'Franchise (18 PCV, 12–16 FP)', value: 'Franchise' },
-  { name: 'Star (15 PCV, 7–11 FP)', value: 'Star' },
-  { name: 'Core (12 PCV, 4–6 FP)', value: 'Core' },
-  { name: 'Rotation (8 PCV, 2–4 FP)', value: 'Rotation' },
-  { name: 'Development (5 PCV, 1–2 FP)', value: 'Development' }
+  { name: 'Franchise', value: 'Franchise' },
+  { name: 'Star', value: 'Star' },
+  { name: 'Core', value: 'Core' },
+  { name: 'Rotation', value: 'Rotation' },
+  { name: 'Development', value: 'Development' }
 ];
-const SEASON_OPTION = { type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 };
+const SEASON_OPTION = { type: 4, name: 'season', description: 'Season (default: current)', required: false, min_value: 1 };
 
 // Players and GMs use the button menu. Slash commands are kept to the minimum:
 // /drew menu, /drew help, a backup /drew report, and the Commissioner's tools.
+const DREW_VERSION = '2026-11-11b';
 const commandDefinitions = [
   {
     type: 1,
     name: 'drew',
     description: 'League assistant',
     options: [
-      { type: 1, name: 'menu', description: 'Open the league menu (report games, set times, stats, your team)' },
+      { type: 1, name: 'menu', description: 'Open the league menu' },
       { type: 1, name: 'help', description: 'How the league menu works' },
       {
         type: 1,
         name: 'report',
-        description: 'Backup way to report a game if the Report button does not work',
+        description: 'Backup way to report a game',
         options: [
-          { type: 3, name: 'game', description: 'Start typing your opponent', required: true, max_length: 40, autocomplete: true },
+          { type: 3, name: 'game', description: 'Type a team name', required: true, max_length: 40, autocomplete: true },
           {
             type: 3, name: 'result', description: 'Your result', required: true,
-            choices: [{ name: 'We won', value: 'won' }, { name: 'We lost (only after a no-report win)', value: 'lost' }]
+            choices: [{ name: 'We won', value: 'won' }, { name: 'We lost (fixing a no-report win)', value: 'lost' }]
           },
-          { type: 11, name: 'screenshot', description: 'The Game Stats screen showing both teams', required: true }
+          { type: 11, name: 'screenshot', description: 'Game Stats screenshot', required: true }
         ]
       },
-      { type: 1, name: 'setup-check', description: 'Commissioner: check league roles, channels, and database' },
+      { type: 1, name: 'setup-check', description: 'Commissioner: check setup' },
       {
         type: 2,
         name: 'admin',
         description: 'Commissioner tools',
         options: [
-          { type: 1, name: 'post-menu', description: 'Post the league menu buttons in this channel (pin it)' },
+          { type: 1, name: 'post-menu', description: 'Post the menu buttons here' },
           {
             type: 1,
             name: 'import',
-            description: 'Load teams, players, games, or prices from a CSV file',
+            description: 'Load a CSV file',
             options: [
               {
                 type: 3, name: 'kind', description: 'What the file contains', required: true,
@@ -148,7 +149,7 @@ const commandDefinitions = [
                   { name: 'Teams (franchises)', value: 'franchises' },
                   { name: 'Players', value: 'players' },
                   { name: 'Games (schedule)', value: 'fixtures' },
-                  { name: 'Player prices (published FP cost)', value: 'prices' }
+                  { name: 'Prices', value: 'prices' }
                 ]
               },
               { type: 11, name: 'file', description: 'CSV file', required: true }
@@ -157,12 +158,12 @@ const commandDefinitions = [
           {
             type: 1,
             name: 'price',
-            description: "Publish one player's tier and FP cost (from the scorecard total, or set directly)",
+            description: "Publish a player's tier and FP cost",
             options: [
               { type: 6, name: 'player', description: 'Player', required: true },
-              { type: 4, name: 'scorecard', description: 'Scorecard total 3–15 (sets tier and FP from the Season 1 table)', required: false, min_value: 3, max_value: 15 },
-              { type: 3, name: 'tier', description: 'Tier (use with fp_cost instead of scorecard)', required: false, choices: TIER_CHOICES },
-              { type: 4, name: 'fp_cost', description: 'FP cost per season (use with tier)', required: false, min_value: 1, max_value: 16 },
+              { type: 4, name: 'scorecard', description: 'Scorecard total 3–15', required: false, min_value: 3, max_value: 15 },
+              { type: 3, name: 'tier', description: 'Tier (with fp_cost)', required: false, choices: TIER_CHOICES },
+              { type: 4, name: 'fp_cost', description: 'FP per season (with tier)', required: false, min_value: 1, max_value: 16 },
               SEASON_OPTION
             ]
           },
@@ -173,10 +174,10 @@ const commandDefinitions = [
             options: [{
               type: 3, name: 'action', description: 'What to do', required: true,
               choices: [
-                { name: 'Draw the order and start the first-season draft (10 rounds)', value: 'start-inaugural' },
-                { name: 'Run the lottery and start the yearly one-round draft', value: 'start-entry' },
+                { name: 'Start first-season draft', value: 'start-inaugural' },
+                { name: 'Run lottery + yearly draft', value: 'start-entry' },
                 { name: 'Undo the last pick', value: 'undo' },
-                { name: 'Skip the team on the clock', value: 'pass' },
+                { name: 'Skip team on the clock', value: 'pass' },
                 { name: 'End the draft now', value: 'end' }
               ]
             }]
@@ -184,92 +185,92 @@ const commandDefinitions = [
           {
             type: 1,
             name: 'readtest',
-            description: 'Test how DREW reads a screenshot (nothing is saved)',
+            description: 'Test screenshot reading',
             options: [
-              { type: 11, name: 'screenshot', description: 'A Game Stats screenshot', required: true },
+              { type: 11, name: 'screenshot', description: 'Screenshot', required: true },
               {
-                type: 3, name: 'model', description: 'Reader model (default: the league setting)', required: false,
-                choices: [{ name: 'Haiku 5.5 (cheapest)', value: 'claude-haiku-5-5' }, { name: 'Sonnet 5.5 (stronger)', value: 'claude-sonnet-5-5' }]
+                type: 3, name: 'model', description: 'Reader model', required: false,
+                choices: [{ name: 'Haiku', value: 'claude-haiku-5-5' }, { name: 'Sonnet', value: 'claude-sonnet-5-5' }]
               }
             ]
           },
           {
             type: 1,
             name: 'forfeit',
-            description: 'Committee: record a forfeit or double forfeit',
+            description: 'Record a forfeit',
             options: [
-              { type: 3, name: 'fixture', description: 'The game (start typing a team)', required: true, max_length: 40, autocomplete: true },
+              { type: 3, name: 'fixture', description: 'Type a team name', required: true, max_length: 40, autocomplete: true },
               {
                 type: 3, name: 'forfeiting', description: 'Who forfeits', required: true,
-                choices: [{ name: 'Home team', value: 'home' }, { name: 'Away team', value: 'away' }, { name: 'Both (double forfeit)', value: 'both' }]
+                choices: [{ name: 'Home team', value: 'home' }, { name: 'Away team', value: 'away' }, { name: 'Both', value: 'both' }]
               },
-              { type: 3, name: 'reason', description: 'Short reason for the record', required: true, max_length: 200 }
+              { type: 3, name: 'reason', description: 'Reason', required: true, max_length: 200 }
             ]
           },
           {
             type: 1,
             name: 'credit',
-            description: 'Committee: grant a verified ready-team eligibility credit',
+            description: 'Grant a ready-team credit',
             options: [
-              { type: 6, name: 'player', description: 'Player who was ready', required: true },
-              { type: 3, name: 'fixture', description: 'The forfeited game (start typing a team)', required: true, max_length: 40, autocomplete: true }
+              { type: 6, name: 'player', description: 'Player', required: true },
+              { type: 3, name: 'fixture', description: 'Type a team name', required: true, max_length: 40, autocomplete: true }
             ]
           },
           {
             type: 1,
             name: 'export',
-            description: 'Download league data as a CSV file',
+            description: 'Download a CSV',
             options: [
               {
                 type: 3, name: 'kind', description: 'What to export', required: true,
-                choices: [{ name: 'Standings', value: 'standings' }, { name: 'Player season stats', value: 'players' }, { name: 'Every player game line', value: 'games' }]
+                choices: [{ name: 'Standings', value: 'standings' }, { name: 'Player stats', value: 'players' }, { name: 'Game lines', value: 'games' }]
               },
               SEASON_OPTION
             ]
           },
-          { type: 1, name: 'publish', description: 'Post current standings in #standings and leaders in #league-stats', options: [SEASON_OPTION] },
+          { type: 1, name: 'publish', description: 'Post standings and leaders', options: [SEASON_OPTION] },
           {
             type: 1,
             name: 'sign',
-            description: 'Sign a player directly (override; GMs normally send offers from the menu)',
+            description: 'Sign a player directly',
             options: [
               { type: 6, name: 'player', description: 'Player', required: true },
               { type: 3, name: 'franchise', description: 'Team ID', required: true, max_length: 40 },
-              { type: 3, name: 'tier', description: 'PCV tier from the scorecard', required: true, choices: TIER_CHOICES },
-              { type: 4, name: 'fp_cost', description: 'Published FP cost per season', required: true, min_value: 1, max_value: 16 },
-              { type: 4, name: 'years', description: 'Guaranteed seasons', required: true, choices: [{ name: '1', value: 1 }, { name: '2', value: 2 }, { name: '3', value: 3 }] },
+              { type: 3, name: 'tier', description: 'Tier', required: true, choices: TIER_CHOICES },
+              { type: 4, name: 'fp_cost', description: 'FP per season', required: true, min_value: 1, max_value: 16 },
+              { type: 4, name: 'years', description: 'Seasons', required: true, choices: [{ name: '1', value: 1 }, { name: '2', value: 2 }, { name: '3', value: 3 }] },
               {
-                type: 3, name: 'source', description: 'Where the FP cost came from', required: true,
-                choices: [{ name: 'Scorecard table', value: 'Scorecard table' }, { name: 'Value Index', value: 'Value Index' }, { name: 'Committee adjustment', value: 'Committee adjustment' }, { name: 'Band minimum (unsigned 7 days)', value: 'Band minimum' }]
+                type: 3, name: 'source', description: 'FP cost source', required: true,
+                choices: [{ name: 'Scorecard', value: 'Scorecard table' }, { name: 'Value Index', value: 'Value Index' }, { name: 'Committee', value: 'Committee adjustment' }, { name: 'Band minimum', value: 'Band minimum' }]
               },
-              { type: 5, name: 'player_option', description: 'Loyalty option year (3 full seasons with this team)', required: false }
+              { type: 5, name: 'player_option', description: 'Loyalty option year', required: false }
             ]
           },
           {
             type: 1,
             name: 'release',
-            description: 'Release a player directly: offseason buyout or dead cap',
+            description: 'Release a player directly',
             options: [
               { type: 6, name: 'player', description: 'Player', required: true },
-              { type: 3, name: 'method', description: 'How', required: true, choices: [{ name: 'Buyout (half the remaining FP, offseason only)', value: 'buyout' }, { name: 'Dead cap (full FP stays on the cap)', value: 'deadcap' }] },
-              { type: 3, name: 'reason', description: 'Short reason for the record', required: true, max_length: 200 }
+              { type: 3, name: 'method', description: 'How', required: true, choices: [{ name: 'Buyout', value: 'buyout' }, { name: 'Dead cap', value: 'deadcap' }] },
+              { type: 3, name: 'reason', description: 'Reason', required: true, max_length: 200 }
             ]
           },
           {
             type: 1,
             name: 'trade',
-            description: 'Record a trade directly (GMs normally propose trades from the menu)',
+            description: 'Record a trade directly',
             options: [
-              { type: 3, name: 'franchise_a', description: 'First team ID', required: true, max_length: 40 },
-              { type: 3, name: 'players_a', description: 'Player IDs leaving team A, comma-separated', required: true, max_length: 200 },
-              { type: 3, name: 'franchise_b', description: 'Second team ID', required: true, max_length: 40 },
-              { type: 3, name: 'players_b', description: 'Player IDs leaving team B, comma-separated (blank if none)', required: false, max_length: 200 }
+              { type: 3, name: 'franchise_a', description: 'Team A ID', required: true, max_length: 40 },
+              { type: 3, name: 'players_a', description: 'Player IDs leaving A', required: true, max_length: 200 },
+              { type: 3, name: 'franchise_b', description: 'Team B ID', required: true, max_length: 40 },
+              { type: 3, name: 'players_b', description: 'Player IDs leaving B', required: false, max_length: 200 }
             ]
           },
           {
             type: 1,
             name: 'option',
-            description: "Record a player's decision on their option year",
+            description: 'Record an option decision',
             options: [
               { type: 6, name: 'player', description: 'Player', required: true },
               { type: 3, name: 'decision', description: 'Decision', required: true, choices: [{ name: 'Exercise', value: 'exercise' }, { name: 'Decline', value: 'decline' }] }
@@ -278,29 +279,29 @@ const commandDefinitions = [
           {
             type: 1,
             name: 'season',
-            description: 'Season phase: start the season, or close it (banks FP, expires contracts)',
-            options: [{ type: 3, name: 'action', description: 'Action', required: true, choices: [{ name: 'Start the current season', value: 'start' }, { name: 'Close the current season', value: 'close' }] }]
+            description: 'Start or close the season',
+            options: [{ type: 3, name: 'action', description: 'Action', required: true, choices: [{ name: 'Start', value: 'start' }, { name: 'Close', value: 'close' }] }]
           },
           {
             type: 1,
             name: 'staff',
-            description: "Set a team's captain and GM",
+            description: 'Set captain and GM',
             options: [
               { type: 3, name: 'franchise', description: 'Team ID', required: true, max_length: 40 },
               { type: 6, name: 'captain', description: 'Captain', required: true },
-              { type: 6, name: 'gm', description: 'GM (leave empty to keep the current GM)', required: false }
+              { type: 6, name: 'gm', description: 'GM (optional)', required: false }
             ]
           },
           {
             type: 1,
             name: 'player',
-            description: 'Add a player or update their team and position',
+            description: 'Add or update a player',
             options: [
-              { type: 6, name: 'user', description: 'Discord member', required: true },
-              { type: 3, name: 'player_id', description: 'League Player ID', required: true, max_length: 40 },
+              { type: 6, name: 'user', description: 'Member', required: true },
+              { type: 3, name: 'player_id', description: 'Player ID', required: true, max_length: 40 },
               { type: 3, name: 'name', description: 'Display name', required: true, max_length: 60 },
-              { type: 3, name: 'franchise', description: 'Team ID (leave empty for free agent)', required: false, max_length: 40 },
-              { type: 3, name: 'position', description: 'Declared position this season', required: false, max_length: 20 }
+              { type: 3, name: 'franchise', description: 'Team ID (blank = free agent)', required: false, max_length: 40 },
+              { type: 3, name: 'position', description: 'Position', required: false, max_length: 20 }
             ]
           }
         ]
@@ -312,7 +313,7 @@ const commandDefinitions = [
 async function registerCommands(env) {
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_APPLICATION_ID || !env.DISCORD_GUILD_ID) {
     console.error('Command registration skipped: required Discord settings are missing.');
-    return;
+    return { ok: false, status: 0, detail: 'DISCORD_BOT_TOKEN, DISCORD_APPLICATION_ID, or DISCORD_GUILD_ID is missing in Cloudflare.' };
   }
   const url = `https://discord.com/api/v10/applications/${env.DISCORD_APPLICATION_ID}/guilds/${env.DISCORD_GUILD_ID}/commands`;
   const response = await fetch(url, {
@@ -324,10 +325,12 @@ async function registerCommands(env) {
     body: JSON.stringify(commandDefinitions)
   });
   if (!response.ok) {
-    console.error(`Command registration failed with HTTP ${response.status}.`);
-  } else {
-    console.log('DREW slash commands registered for the configured league server.');
+    const detail = (await response.text().catch(() => '')).slice(0, 400);
+    console.error(`Command registration failed with HTTP ${response.status}: ${detail}`);
+    return { ok: false, status: response.status, detail };
   }
+  console.log('DREW slash commands registered for the configured league server.');
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------- Discord helpers
@@ -546,7 +549,7 @@ function parseCsv(text) {
 
 const IMPORT_COLUMNS = {
   franchises: ['franchise_id', 'name', 'crew_name'],
-  players: ['player_id', 'display_name', 'franchise_id', 'position'],
+  players: ['player_id', 'display_name', 'discord_id', 'franchise_id', 'position'],
   fixtures: ['fixture_id', 'season', 'week', 'home_franchise_id', 'away_franchise_id'],
   prices: ['player_id']
 };
@@ -2891,7 +2894,9 @@ async function tradeSubmit(env, db, me, id) {
   const summary = await tradeSummary(db, o);
   if (!summary.legal) return renderTrade(db, tx);
   for (const pid of [...o.players_a, ...o.players_b]) {
-    if ((await playerById(db, pid))?.discord_id === me) return { content: 'You can\'t trade yourself. The Commissioner handles a GM\'s own trade directly.', components: [backToGm()] };
+    const p = await playerById(db, pid);
+    if (p?.discord_id === me) return { content: 'You can\'t trade yourself. The Commissioner handles a GM\'s own trade directly.', components: [backToGm()] };
+    if (!p?.discord_id) return { content: `${p?.display_name ?? pid} has no linked Discord account, so they can't agree to the trade. Ask the Commissioner to link them first.`, components: [backToGm()] };
   }
   await db.batch([
     db.prepare("UPDATE pending_tx SET status = 'Awaiting team' WHERE id = ? AND status = 'Draft'").bind(id),
@@ -2912,7 +2917,7 @@ async function sendTradeToCommissioner(env, db, tx, o) {
   const preview = [
     '**Trade**',
     summary.text,
-    handled.length ? `⚠️ Get consent privately from: ${await playerNames(db, handled)} (GM in the trade, or no linked Discord account).` : 'Both GMs accepted and every player in the trade agreed in DREW.'
+    handled.length ? `⚠️ Get consent privately from: ${await playerNames(db, handled)} (a GM in the trade).` : 'Both GMs accepted and every player in the trade agreed in DREW.'
   ].join('\n');
   await requestApproval(env, db, tx.created_by, 'trade', o, preview, tx.id);
 }
@@ -2944,7 +2949,7 @@ async function tradeRespond(env, db, me, id, action) {
     const consents = {};
     for (const pid of [...o.players_a, ...o.players_b]) {
       const p = await playerById(db, pid);
-      consents[pid] = !p?.discord_id || gmIds.includes(p.discord_id) ? 'commissioner' : 'waiting';
+      consents[pid] = gmIds.includes(p?.discord_id) ? 'commissioner' : 'waiting';
     }
     const next = { ...o, consents };
     const waiting = Object.entries(consents).filter(([, v]) => v === 'waiting').map(([pid]) => pid);
@@ -3032,7 +3037,7 @@ async function requestsView(db, me, notice) {
 
 // ---------------------------------------------------------------- draft
 // State lives in settings.draft as JSON. Every pick checks that the state hasn't moved
-// (two people can't take the same pick), creates a 1-season contract at the published
+// (two people can't take the same pick), creates a rookie contract at the published
 // price, and then skips any team that is full or has no player that fits its rules.
 
 const SCORECARD_PRICE = {
@@ -3077,7 +3082,8 @@ function draftOwner(st, n) {
   return st.snake && round % 2 === 1 ? st.order[teams - 1 - i] : st.order[i];
 }
 const pickLabel = (st, n) => `${Math.floor(n / st.order.length) + 1}.${String((n % st.order.length) + 1).padStart(2, '0')}`;
-const draftContract = (st, fid, p) => ({ player_id: p.player_id, franchise_id: fid, tier: p.tier, pcv: TIERS[p.tier].pcv, fp_cost: p.fp_cost, start_season: st.season, years: 1, option_status: 'None', status: 'Active' });
+const ROOKIE_YEARS = 2;
+const draftContract = (st, fid, p) => ({ player_id: p.player_id, franchise_id: fid, tier: p.tier, pcv: TIERS[p.tier].pcv, fp_cost: p.fp_cost, start_season: st.season, years: ROOKIE_YEARS, option_status: 'None', status: 'Active' });
 
 async function draftCandidates(db, st, fid) {
   const pool = await freeAgents(db, st.season);
@@ -3128,7 +3134,7 @@ async function draftBoard(db, st) {
     lines.push('Latest picks:');
     for (const p of recent) lines.push(`${pickLabel(st, p.i)} ${name(p.fid)} — ${p.player_id ? `**${p.name}** (${p.tier} · ${p.fp} FP)` : `skipped (${p.note})`}`);
   }
-  if (st.status === 'live') lines.push('GMs: tap **Make my pick** when you\'re on the clock. Drafted players get a 1-season contract at their published price.');
+  if (st.status === 'live') lines.push(`GMs: tap **Make my pick** when you're on the clock. Drafted players get a ${ROOKIE_YEARS}-season rookie contract at their published price.`);
   return {
     content: lines.join('\n').slice(0, 1990),
     components: st.status === 'live' ? [actionRow(btn('Make my pick', 'dft:pick', 1), ...(st.kind === 'entry' ? [btn('Pass this pick', 'dft:pass')] : []))] : []
@@ -3319,7 +3325,7 @@ async function draftConfirmView(interaction, env, n, playerId) {
   const p = (await freeAgents(db, st.season)).find((x) => x.player_id === playerId);
   if (!p) return draftPickView(interaction, env, n);
   return {
-    content: `**Draft ${p.display_name}?** ${p.tier} · ${p.fp_cost} FP for 1 season${p.position ? ` · ${p.position}` : ''}`,
+    content: `**Draft ${p.display_name}?** ${p.tier} · ${p.fp_cost} FP per season · ${ROOKIE_YEARS}-season rookie contract${p.position ? ` · ${p.position}` : ''}`,
     components: [actionRow(btn(`Draft ${p.display_name}`, `dft:ok:${n}:${p.player_id}`, 3), btn('Back', `dft:tiers:${n}`))]
   };
 }
@@ -3343,18 +3349,18 @@ async function draftMakePick(interaction, env, n, playerId) {
   const guard = "EXISTS (SELECT 1 FROM settings WHERE key = 'draft' AND value = ?)";
   const now = nowIso();
   await db.batch([
-    db.prepare(`INSERT INTO contracts (player_id, franchise_id, tier, pcv, fp_cost, fp_source, start_season, years, option_status, status, signed_at, signed_by) SELECT ?, ?, ?, ?, ?, 'Draft', ?, 1, 'None', 'Active', ?, ? WHERE ${guard}`)
-      .bind(c.player_id, fid, c.tier, c.pcv, c.fp_cost, c.start_season, now, me, raw),
+    db.prepare(`INSERT INTO contracts (player_id, franchise_id, tier, pcv, fp_cost, fp_source, start_season, years, option_status, status, signed_at, signed_by) SELECT ?, ?, ?, ?, ?, 'Draft', ?, ?, 'None', 'Active', ?, ? WHERE ${guard}`)
+      .bind(c.player_id, fid, c.tier, c.pcv, c.fp_cost, c.start_season, c.years, now, me, raw),
     db.prepare(`UPDATE players SET franchise_id = ?, updated_at = ? WHERE player_id = ? AND ${guard}`).bind(fid, now, p.player_id, raw),
     db.prepare("UPDATE settings SET value = ? WHERE key = 'draft' AND value = ?").bind(JSON.stringify(next), raw)
   ]);
   const savedRaw = JSON.stringify(next);
   if ((await getDraft(db)).raw !== savedRaw) return 'The board moved on: that pick was already made.';
-  await audit(db, me, 'contracts', p.player_id, 'draft pick', null, `${pickLabel(st, n)} ${fid}`, `Drafted at ${p.fp_cost} FP for 1 season`).run();
+  await audit(db, me, 'contracts', p.player_id, 'draft pick', null, `${pickLabel(st, n)} ${fid}`, `Drafted at ${p.fp_cost} FP per season for ${ROOKIE_YEARS} seasons`).run();
   const advanced = await draftAdvance(db, structuredClone(next));
   if (advanced.picks.length !== next.picks.length || advanced.status !== next.status) await saveDraft(db, savedRaw, advanced);
   await draftPublish(env, db, advanced, `Pick ${pickLabel(st, n)}: **${teams[fid]?.name ?? fid}** select **${p.display_name}** (${p.tier} · ${p.fp_cost} FP)`);
-  return `You drafted **${p.display_name}** (${p.tier} · ${p.fp_cost} FP, 1 season).`;
+  return `You drafted **${p.display_name}** (${p.tier} · ${p.fp_cost} FP per season, ${ROOKIE_YEARS}-season rookie contract).`;
 }
 
 async function draftPass(interaction, env) {
@@ -3644,7 +3650,7 @@ async function adminImport(interaction, env, opts) {
     for (const r of records) {
       if (!r.player_id || !r.display_name) { problems.push(`line ${r._line}: player_id and display_name are required`); continue; }
       if (r.franchise_id && !franchiseIds.has(r.franchise_id)) { problems.push(`line ${r._line}: unknown franchise ${r.franchise_id}`); continue; }
-      if (r.discord_id && !/^\d{15,22}$/.test(r.discord_id)) { problems.push(`line ${r._line}: discord_id should be the long number from "Copy User ID"`); continue; }
+      if (!r.discord_id || !/^\d{15,22}$/.test(r.discord_id)) { problems.push(`line ${r._line}: every player needs a linked Discord account — put their discord_id (the long number from "Copy User ID")`); continue; }
       statements.push(db.prepare(
         'INSERT INTO players (player_id, display_name, discord_id, franchise_id, position, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET display_name = excluded.display_name, discord_id = COALESCE(excluded.discord_id, players.discord_id), franchise_id = excluded.franchise_id, position = excluded.position, updated_at = excluded.updated_at'
       ).bind(r.player_id, r.display_name, r.discord_id || null, r.franchise_id || null, r.position || null, now));
@@ -3992,9 +3998,14 @@ export default {
     if (env.DB) ctx.waitUntil(ensureSchema(env.DB).catch(() => {}));
 
     if (command === 'help') {
-      // Refresh the guild command list after a deployment adds or changes commands.
-      ctx.waitUntil(registerCommands(env));
-      return ephemeral(HELP_TEXT);
+      // Refresh the server's command list after a deployment, and say whether Discord accepted it.
+      return deferEphemeral(ctx, interaction, async () => {
+        const reg = await registerCommands(env);
+        const note = reg?.ok
+          ? `✅ Command list refreshed (DREW ${DREW_VERSION}). If you still see old commands, restart Discord (Ctrl+R on PC, close and reopen on phone).`
+          : `⚠️ Discord did not accept the command list (HTTP ${reg?.status}). ${reg?.detail ?? ''}`.trim();
+        return `${HELP_TEXT}\n\n${note}`.slice(0, 1990);
+      });
     }
     if (command === 'menu') return json({ type: 4, data: { ...menuMessage(), flags: EPHEMERAL, allowed_mentions: { parse: [] } } });
     if (command === 'setup-check') return runSetupCheck(interaction, env);
