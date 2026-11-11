@@ -2273,6 +2273,160 @@ async function transactionButton(interaction, env, action, txId) {
   await editOriginal(interaction, { content: `${original}\n\n**${result}**`.slice(0, 1990), components: [] });
 }
 
+// ---------------------------------------------------------------- website data API (read-only)
+// The website calls these. They reuse the same calculations as the bot, and never return
+// Discord IDs, gamertags, screenshots, or review notes.
+
+const apiJson = (body, status = 200) => new Response(JSON.stringify(body), {
+  status,
+  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=60' }
+});
+
+function resultLine(fx, names) {
+  const effect = gameEffect(fx);
+  return {
+    fixture_id: fx.fixture_id, season: fx.season, week: fx.week,
+    home_id: fx.home_id, home: names[fx.home_id] ?? fx.home_id,
+    away_id: fx.away_id, away: names[fx.away_id] ?? fx.away_id,
+    status: fx.status, result_type: fx.result_type, winner_id: fx.winner_id ?? null,
+    home_score: fx.home_score ?? null, away_score: fx.away_score ?? null,
+    start: fx.agreed_start_utc ?? null, counted: Boolean(effect)
+  };
+}
+
+async function apiContext(db, url) {
+  await ensureSchema(db);
+  const state = await leagueState(db);
+  const asked = Number(url.searchParams.get('season'));
+  const season = Number.isInteger(asked) && asked > 0 ? asked : state.season;
+  const franchises = (await db.prepare('SELECT franchise_id, name FROM franchises ORDER BY name').all()).results ?? [];
+  const names = Object.fromEntries(franchises.map((f) => [f.franchise_id, f.name]));
+  return { ...state, season, currentSeason: state.season, franchises, names };
+}
+
+const publicStats = (r, names) => ({
+  player_id: r.player_id, name: r.display_name ?? r.player_id, franchise_id: r.franchise_id ?? null,
+  team: names[r.franchise_id] ?? null, gp: r.gp, pts: r.pts, reb: r.reb, ast: r.ast, stl: r.stl, blk: r.blk, tov: r.tov,
+  fgm: r.fgm, fga: r.fga, tpm: r.tpm, tpa: r.tpa, ftm: r.ftm, fta: r.fta, efg: r.efg
+});
+
+const publicContract = (c) => ({
+  player_id: c.player_id, name: c.display_name ?? c.player_id, tier: c.tier, pcv: c.pcv, fp_cost: c.fp_cost,
+  fp_source: c.fp_source, start_season: c.start_season, end_season: contractEnd(c), status: c.status,
+  option: c.option_status === 'Pending' ? 'undecided' : c.option_status === 'Exercised' ? 'exercised' : c.option_status === 'Declined' ? 'declined' : null
+});
+
+async function handleApi(request, env, url) {
+  if (request.method !== 'GET') return apiJson({ error: 'Read-only' }, 405);
+  if (!env.DB) return apiJson({ error: 'The league database is not connected.' }, 503);
+  const db = env.DB;
+  const ctx = await apiContext(db, url);
+  const { season, names } = ctx;
+  const parts = url.pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean);
+  const route = parts[0] ?? '';
+
+  if (route === 'meta') {
+    const seasons = ((await db.prepare('SELECT DISTINCT season FROM fixtures ORDER BY season').all()).results ?? []).map((r) => r.season);
+    if (!seasons.includes(ctx.currentSeason)) seasons.push(ctx.currentSeason);
+    return apiJson({ league_name: env.LEAGUE_NAME || 'NBA 2K League', season: ctx.currentSeason, phase: ctx.phase, seasons: seasons.sort((a, b) => a - b), teams: ctx.franchises });
+  }
+
+  const { fixtures, franchises } = await loadSeason(db, season);
+  const standings = () => computeStandings(fixtures, franchises).map((r) => ({
+    rank: r.rank, franchise_id: r.franchise_id, name: r.name, gp: r.gp, w: r.w, l: r.l, pct: r.pct,
+    on_court: r.onCourt, on_court_needed: ON_COURT_NEEDED, pf: r.pf, pa: r.pa, diff: r.diff, forfeits: r.forfeits,
+    remaining: r.remaining, seed: r.seed, can_qualify: r.canQualify, tie: Boolean(r.unresolvedTie)
+  }));
+
+  if (route === 'home') {
+    const recent = fixtures.filter((f) => gameEffect(f))
+      .sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? ''))).slice(0, 8).map((f) => resultLine(f, names));
+    const upcoming = fixtures.filter((f) => f.status === 'Time set' && f.agreed_start_utc && Date.parse(f.agreed_start_utc) > Date.now() - 3 * HOUR)
+      .sort((a, b) => a.agreed_start_utc.localeCompare(b.agreed_start_utc)).slice(0, 6).map((f) => resultLine(f, names));
+    const stats = await playerSeasonStats(db, season);
+    const leaders = Object.fromEntries(['pts', 'reb', 'ast'].map((c) => [c, leaderList(stats, c).slice(0, 3).map(({ r, value }) => ({ ...publicStats(r, names), value }))]));
+    return apiJson({ season, phase: ctx.phase, standings: standings(), recent, upcoming, leaders, leader_min_gp: LEADER_MIN_GP });
+  }
+  if (route === 'standings') return apiJson({ season, standings: standings(), playoff_spots: PLAYOFF_SPOTS, on_court_needed: ON_COURT_NEEDED });
+  if (route === 'schedule') {
+    const list = fixtures.slice().sort((a, b) => a.week - b.week || String(a.agreed_start_utc ?? '9').localeCompare(String(b.agreed_start_utc ?? '9')) || a.fixture_id.localeCompare(b.fixture_id));
+    return apiJson({ season, fixtures: list.map((f) => resultLine(f, names)) });
+  }
+  if (route === 'players') {
+    const stats = await playerSeasonStats(db, season);
+    return apiJson({ season, players: stats.map((r) => publicStats(r, names)), leader_min_gp: LEADER_MIN_GP, efg_min_gp: EFG_MIN_GP, efg_min_fga: EFG_MIN_FGA });
+  }
+  if (route === 'leaders') {
+    const category = url.searchParams.get('category') ?? 'pts';
+    if (!CATEGORY_NAMES[category]) return apiJson({ error: 'Unknown category' }, 400);
+    const stats = await playerSeasonStats(db, season);
+    return apiJson({ season, category, label: CATEGORY_NAMES[category], leaders: leaderList(stats, category).map(({ r, value }) => ({ ...publicStats(r, names), value })) });
+  }
+  if (route === 'teams') {
+    const table = standings();
+    return apiJson({ season, teams: franchises.map((f) => ({ franchise_id: f.franchise_id, name: f.name, record: table.find((t) => t.franchise_id === f.franchise_id) ?? null })) });
+  }
+  if (route === 'team' && parts[1]) {
+    const franchise = franchises.find((f) => f.franchise_id === parts[1]);
+    if (!franchise) return apiJson({ error: 'No such team' }, 404);
+    const contracts = await franchiseContracts(db, franchise.franchise_id);
+    const capSeason = ctx.currentSeason;
+    const evaluation = evaluateRoster(contracts, capSeason);
+    const bank = await bankInfo(db, franchise.franchise_id, capSeason);
+    const stats = (await playerSeasonStats(db, season)).filter((r) => r.franchise_id === franchise.franchise_id);
+    const games = fixtures.filter((f) => f.home_id === franchise.franchise_id || f.away_id === franchise.franchise_id)
+      .sort((a, b) => a.week - b.week || a.fixture_id.localeCompare(b.fixture_id)).map((f) => resultLine(f, names));
+    const played = fixtures.filter((f) => gameEffect(f) === 'played' && (f.home_id === franchise.franchise_id || f.away_id === franchise.franchise_id));
+    const forPts = played.reduce((n, f) => n + (f.home_id === franchise.franchise_id ? f.home_score : f.away_score), 0);
+    const agPts = played.reduce((n, f) => n + (f.home_id === franchise.franchise_id ? f.away_score : f.home_score), 0);
+    return apiJson({
+      season, cap_season: capSeason, phase: ctx.phase, team: { franchise_id: franchise.franchise_id, name: franchise.name },
+      record: standings().find((t) => t.franchise_id === franchise.franchise_id) ?? null,
+      scoring: { games: played.length, ppg: played.length ? forPts / played.length : null, opp_ppg: played.length ? agPts / played.length : null },
+      roster: contracts.filter((c) => onRosterIn(c, capSeason) || (c.status === 'Active' && c.start_season > capSeason)).sort((a, b) => b.pcv - a.pcv || b.fp_cost - a.fp_cost).map(publicContract),
+      dead_cap: contracts.filter((c) => c.status === 'Dead cap' && contractEnd(c) >= capSeason).map(publicContract),
+      cap: {
+        size: evaluation.size, roster_max: ROSTER_MAX, roster_min: ROSTER_MIN, pcv: evaluation.pcv, pcv_cap: PCV_CAP, floor: evaluation.floor,
+        franchise_tier: evaluation.franchiseCount, franchise_tier_max: MAX_FRANCHISE_TIER, fp_cap: FP_CAP, fp_by_season: evaluation.fp,
+        bank: bank.balance, bank_max: BANK_MAX, legal: evaluation.legal, problems: evaluation.problems, warnings: evaluation.warnings
+      },
+      players: stats.map((r) => publicStats(r, names)),
+      games
+    });
+  }
+  if (route === 'player' && parts[1]) {
+    const player = await db.prepare('SELECT player_id, display_name, franchise_id, position FROM players WHERE player_id = ?').bind(parts[1]).first();
+    if (!player) return apiJson({ error: 'No such player' }, 404);
+    const line = (await playerSeasonStats(db, season)).find((r) => r.player_id === player.player_id);
+    const log = (await db.prepare(`
+      SELECT f.fixture_id, f.week, f.home_id, f.away_id, f.winner_id, f.home_score, f.away_score, pg.franchise_id,
+        pg.pts, pg.reb, pg.ast, pg.stl, pg.blk, pg.tov, pg.fgm, pg.fga, pg.tpm, pg.tpa, pg.ftm, pg.fta
+      FROM player_games pg JOIN fixtures f ON f.fixture_id = pg.fixture_id
+      WHERE pg.player_id = ? AND f.season = ? AND f.status = 'Final' AND f.result_type = 'Played'
+      ORDER BY f.week, f.fixture_id`).bind(player.player_id, season).all()).results ?? [];
+    const contract = (await db.prepare("SELECT c.*, p.display_name FROM contracts c LEFT JOIN players p ON p.player_id = c.player_id WHERE c.player_id = ? AND c.status = 'Active' ORDER BY c.start_season DESC LIMIT 1").bind(player.player_id).first());
+    const credits = (await db.prepare('SELECT COUNT(*) AS n FROM eligibility_credits c JOIN fixtures f ON f.fixture_id = c.fixture_id WHERE c.player_id = ? AND f.season = ?').bind(player.player_id, season).first())?.n ?? 0;
+    return apiJson({
+      season,
+      player: { player_id: player.player_id, name: player.display_name, franchise_id: player.franchise_id, team: names[player.franchise_id] ?? null, position: player.position },
+      stats: line ? publicStats(line, names) : null,
+      eligibility: { appearances: line?.gp ?? 0, credits, needed: APPEARANCES_NEEDED },
+      contract: contract ? publicContract(contract) : null,
+      games: log.map((g) => {
+        const opponent = g.franchise_id === g.home_id ? g.away_id : g.home_id;
+        const own = g.franchise_id === g.home_id ? g.home_score : g.away_score;
+        const opp = g.franchise_id === g.home_id ? g.away_score : g.home_score;
+        return {
+          fixture_id: g.fixture_id, week: g.week, home: g.franchise_id === g.home_id, opponent_id: opponent, opponent: names[opponent] ?? opponent,
+          won: g.winner_id === g.franchise_id, score: `${own}–${opp}`,
+          pts: g.pts, reb: g.reb, ast: g.ast, stl: g.stl, blk: g.blk, tov: g.tov, fgm: g.fgm, fga: g.fga, tpm: g.tpm, tpa: g.tpa, ftm: g.ftm, fta: g.fta
+        };
+      })
+    });
+  }
+  return apiJson({ error: 'Not found' }, 404);
+}
+
 // ---------------------------------------------------------------- admin
 
 const LEAGUE_ONLY_CHECKS = new Set(['Teams identified', 'Crew names', 'Winner matches the report', 'Every gamertag is linked', "Players are on their team's roster"]);
@@ -2512,6 +2666,14 @@ export default {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/health') {
       return new Response('DREW endpoint is ready.', { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+    }
+    if (url.pathname.startsWith('/api/')) {
+      try {
+        return await handleApi(request, env, url);
+      } catch (error) {
+        console.error(`Website API failed: ${error.message}`);
+        return apiJson({ error: 'Something went wrong loading league data.' }, 500);
+      }
     }
     if (request.method !== 'POST' || url.pathname !== '/interactions') {
       return new Response('Not found.', { status: 404 });
