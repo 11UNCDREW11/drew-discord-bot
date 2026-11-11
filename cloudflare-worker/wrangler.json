@@ -9,7 +9,7 @@
     {
       "binding": "DB",
       "database_name": "drew-league",
-      "database_id": "6b012c51-c222-4b60-b057-2c482bbd5bec"
+      "database_id": "PASTE-YOUR-D1-DATABASE-ID-HERE"
     }
   ],
   "r2_buckets": [
@@ -17,5 +17,10 @@
       "binding": "SCREENSHOTS",
       "bucket_name": "drew-screenshots"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": [
+      "0 * * * *"
+    ]
+  }
 }
