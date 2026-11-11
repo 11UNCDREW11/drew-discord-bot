@@ -50,16 +50,16 @@
         <div class="ladder-team">
           <a class="ladder-name" href="#/team/${encodeURIComponent(r.franchise_id)}">${esc(r.name)}</a>
           <div class="ladder-meta">
-            <span class="court" title="Games played on court toward the ${r.on_court_needed} needed for playoffs">
+            <span class="court" title="Games actually played (not forfeits or no-report wins) toward the ${r.on_court_needed} needed for playoffs">
               <span class="court-bar${r.on_court >= r.on_court_needed ? ' met' : ''}"><span style="width:${courtPct}%"></span></span>
-              ${r.on_court}/${r.on_court_needed} on court
+              ${r.on_court}/${r.on_court_needed} played
             </span>
             <span class="${r.diff > 0 ? 'diff-pos' : r.diff < 0 ? 'diff-neg' : ''}">${signed(r.diff)} diff</span>
             ${r.tie ? '<span class="tag tie">Tie: Commissioner draw</span>' : ''}
-            ${r.can_qualify ? '' : '<span>Can\'t reach 32 on court</span>'}
+            ${r.can_qualify ? '' : '<span>Can\'t reach 32 played</span>'}
           </div>
         </div>
-        <span class="ladder-record">${r.w}–${r.l}<small>${r.gp} played</small></span>
+        <span class="ladder-record">${r.w}–${r.l}<small>${r.gp} games</small></span>
       </li>`;
       if (r.seed === 2 && lastSeed > 2) html += '<li class="cutline bye" aria-hidden="true"><span>Bye line: top 2 skip round one</span></li>';
       if (r.seed && r.seed === lastSeed && i < rows.length - 1) html += '<li class="cutline" aria-hidden="true"><span>Playoff line</span></li>';
@@ -74,10 +74,10 @@
     let right = '';
     let meta = '';
     if (g.result_type === 'Played' && g.home_score != null) right = `<div>${g.home_score}</div><div>${g.away_score}</div>`;
-    else if (g.result_type === 'Unreported') { right = '<div>W</div><div>L</div>'; meta = 'Unreported: home team awarded the win'; }
+    else if (g.result_type === 'Unreported') { right = '<div>W</div><div>L</div>'; meta = 'No report: home team gets the win'; }
     else if (g.result_type === 'Forfeit') { right = `<div>${homeWon ? 'W' : 'F'}</div><div>${awayWon ? 'W' : 'F'}</div>`; meta = 'Forfeit'; }
     else if (g.result_type === 'Double forfeit') { right = '<div>F</div><div>F</div>'; meta = 'Double forfeit'; }
-    else if (g.status === 'Reported') meta = 'Report waiting for confirmation';
+    else if (g.status === 'Reported') meta = 'Reported, waiting on the other team';
     else if (g.start) meta = when(g.start);
     else meta = g.status === 'Time proposed' ? 'Time proposed, not yet confirmed' : 'Time not set';
     const metaText = [showWeek ? `Week ${g.week}` : '', meta].filter(Boolean).join(', ');
@@ -150,7 +150,7 @@
     }).join('');
     render(`
       <h1 class="page-title">Season ${d.season} standings</h1>
-      <p class="page-sub">${d.phase === 'in-season' ? 'Season in progress.' : 'Offseason.'} The top 6 teams with 32 games played on court make the playoffs.</p>
+      <p class="page-sub">${d.phase === 'in-season' ? 'Season in progress.' : 'Offseason.'} The top 6 teams that play at least 32 games (forfeits don\'t count) make the playoffs; the top 2 skip the first round.</p>
       <div class="layout">
         <section aria-label="Standings">${ladder(d.standings)}</section>
         <aside>
@@ -197,7 +197,7 @@
       </div>
       <div class="bigstats">
         <div class="bigstat"><b>${r ? `${r.w}–${r.l}` : '0–0'}</b><span>Record</span></div>
-        <div class="bigstat"><b>${r ? r.on_court : 0}/${r ? r.on_court_needed : 32}</b><span>Played on court</span></div>
+        <div class="bigstat"><b>${r ? r.on_court : 0}/${r ? r.on_court_needed : 32}</b><span>Games played (32 needed)</span></div>
         <div class="bigstat"><b>${one(d.scoring.ppg)}</b><span>Points per game</span></div>
         <div class="bigstat"><b>${one(d.scoring.opp_ppg)}</b><span>Allowed per game</span></div>
       </div>
@@ -222,7 +222,7 @@
 
       <h2 class="section-title">Player stats</h2>
       ${sortableTable([{ key: 'name', label: 'Player', text: true, cls: 'name', cell: (p) => playerLink(p.player_id, p.name) }, ...perGameCols], d.players, { key: 'ppg' })}
-      <p class="note">Per game. Only games played on court count toward stats.</p>
+      <p class="note">Per game. Forfeits and no-report wins don\'t count toward stats.</p>
 
       <h2 class="section-title">Games</h2>
       ${d.games.length ? `<ul class="game-list">${d.games.map((g) => gameRow(g, { showWeek: true })).join('')}</ul>` : '<p class="note">No games scheduled.</p>'}
