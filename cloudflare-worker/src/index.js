@@ -126,6 +126,18 @@ const commandDefinitions = [
         ]
       },
       { type: 1, name: 'myfixtures', description: "Show your franchise's open fixtures and their IDs" },
+      {
+        type: 1,
+        name: 'cap',
+        description: "A franchise's contracts, PCV, FP by season, bank, and roster legality",
+        options: [{ type: 3, name: 'franchise', description: 'Franchise ID (default: yours)', required: false, max_length: 40 }]
+      },
+      {
+        type: 1,
+        name: 'contract',
+        description: "A player's contract (yours if you leave player empty)",
+        options: [{ type: 6, name: 'player', description: 'Player', required: false }]
+      },
       { type: 1, name: 'standings', description: 'League standings and the playoff line', options: [{ type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }] },
       {
         type: 1,
@@ -255,6 +267,59 @@ const commandDefinitions = [
           },
           {
             type: 1,
+            name: 'sign',
+            description: 'Sign a player to a contract (shows the roster check first)',
+            options: [
+              { type: 6, name: 'player', description: 'Player', required: true },
+              { type: 3, name: 'franchise', description: 'Franchise ID', required: true, max_length: 40 },
+              { type: 3, name: 'tier', description: 'PCV tier from the scorecard', required: true, choices: [{ name: 'Franchise (18 PCV, 12–16 FP)', value: 'Franchise' }, { name: 'Star (15 PCV, 7–11 FP)', value: 'Star' }, { name: 'Core (12 PCV, 4–6 FP)', value: 'Core' }, { name: 'Rotation (8 PCV, 2–4 FP)', value: 'Rotation' }, { name: 'Development (5 PCV, 1–2 FP)', value: 'Development' }] },
+              { type: 4, name: 'fp_cost', description: 'Published FP cost per season', required: true, min_value: 1, max_value: 16 },
+              { type: 4, name: 'years', description: 'Guaranteed seasons', required: true, choices: [{ name: '1', value: 1 }, { name: '2', value: 2 }, { name: '3', value: 3 }] },
+              {
+                type: 3, name: 'source', description: 'Where the FP cost came from', required: true,
+                choices: [{ name: 'Scorecard table', value: 'Scorecard table' }, { name: 'Value Index', value: 'Value Index' }, { name: 'Committee adjustment', value: 'Committee adjustment' }, { name: 'Band minimum (unsigned 7 days)', value: 'Band minimum' }]
+              },
+              { type: 5, name: 'player_option', description: 'Loyalty player option year (3 full seasons with this franchise)', required: false }
+            ]
+          },
+          {
+            type: 1,
+            name: 'release',
+            description: 'Release a player: offseason buyout or dead cap',
+            options: [
+              { type: 6, name: 'player', description: 'Player', required: true },
+              { type: 3, name: 'method', description: 'How', required: true, choices: [{ name: 'Buyout (half the remaining FP, offseason only)', value: 'buyout' }, { name: 'Dead cap (full FP stays on the cap)', value: 'deadcap' }] },
+              { type: 3, name: 'reason', description: 'Short reason for the record', required: true, max_length: 200 }
+            ]
+          },
+          {
+            type: 1,
+            name: 'trade',
+            description: 'Trade players between two franchises (both rosters are checked)',
+            options: [
+              { type: 3, name: 'franchise_a', description: 'First franchise ID', required: true, max_length: 40 },
+              { type: 3, name: 'players_a', description: 'Player IDs leaving franchise A, comma-separated', required: true, max_length: 200 },
+              { type: 3, name: 'franchise_b', description: 'Second franchise ID', required: true, max_length: 40 },
+              { type: 3, name: 'players_b', description: 'Player IDs leaving franchise B, comma-separated (blank if none)', required: false, max_length: 200 }
+            ]
+          },
+          {
+            type: 1,
+            name: 'option',
+            description: "Record a player's decision on their option year",
+            options: [
+              { type: 6, name: 'player', description: 'Player', required: true },
+              { type: 3, name: 'decision', description: 'Decision', required: true, choices: [{ name: 'Exercise', value: 'exercise' }, { name: 'Decline', value: 'decline' }] }
+            ]
+          },
+          {
+            type: 1,
+            name: 'season',
+            description: 'Season phase: start the season, or close it (banks FP, expires contracts)',
+            options: [{ type: 3, name: 'action', description: 'Action', required: true, choices: [{ name: 'Start the current season', value: 'start' }, { name: 'Close the current season', value: 'close' }] }]
+          },
+          {
+            type: 1,
             name: 'staff',
             description: "Set a franchise's captain and GM",
             options: [
@@ -362,6 +427,7 @@ function deferEphemeral(ctx, interaction, work) {
       content = 'Something went wrong on DREW\'s side. Nothing was changed unless a message above says so. Try again, or contact the Commissioner.';
     }
     if (content && typeof content === 'object' && content.file) await editOriginalWithFile(interaction, content);
+    else if (content && typeof content === 'object') await editOriginal(interaction, content);
     else await editOriginal(interaction, { content });
   })());
   return json({ type: 5, data: { flags: EPHEMERAL } });
@@ -1340,7 +1406,14 @@ async function ensureSchema(db) {
   for (const statement of [
     'ALTER TABLE fixtures ADD COLUMN reminders_sent INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE fixtures ADD COLUMN unreported_at TEXT',
-    'CREATE TABLE IF NOT EXISTS eligibility_credits (player_id TEXT NOT NULL, fixture_id TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY (player_id, fixture_id))'
+    'CREATE TABLE IF NOT EXISTS eligibility_credits (player_id TEXT NOT NULL, fixture_id TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY (player_id, fixture_id))',
+    'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)',
+    'CREATE TABLE IF NOT EXISTS contracts (contract_id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT NOT NULL, franchise_id TEXT NOT NULL, tier TEXT NOT NULL, pcv INTEGER NOT NULL, fp_cost INTEGER NOT NULL, fp_source TEXT, start_season INTEGER NOT NULL, years INTEGER NOT NULL, option_status TEXT NOT NULL DEFAULT \'None\', status TEXT NOT NULL, ended_season INTEGER, signed_at TEXT, signed_by TEXT, ended_at TEXT)',
+    'CREATE INDEX IF NOT EXISTS idx_contracts_franchise ON contracts (franchise_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_contracts_player ON contracts (player_id, status)',
+    'CREATE TABLE IF NOT EXISTS fp_bank (franchise_id TEXT NOT NULL, season INTEGER NOT NULL, opening_balance INTEGER NOT NULL, PRIMARY KEY (franchise_id, season))',
+    'CREATE TABLE IF NOT EXISTS fp_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, franchise_id TEXT NOT NULL, season INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, from_current INTEGER NOT NULL DEFAULT 0, from_bank INTEGER NOT NULL DEFAULT 0, note TEXT, at TEXT NOT NULL)',
+    'CREATE TABLE IF NOT EXISTS pending_tx (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL, decided_by TEXT, decided_at TEXT)'
   ]) {
     try { await db.prepare(statement).run(); } catch { /* column already exists */ }
   }
@@ -1733,6 +1806,473 @@ async function adminPublish(env, opts) {
   return 'Posted standings in #standings and points/rebounds/assists leaders in #league-stats.';
 }
 
+// ---------------------------------------------------------------- contracts and FP (step 5)
+
+const TIERS = {
+  Franchise: { pcv: 18, band: [12, 16] },
+  Star: { pcv: 15, band: [7, 11] },
+  Core: { pcv: 12, band: [4, 6] },
+  Rotation: { pcv: 8, band: [2, 4] },
+  Development: { pcv: 5, band: [1, 2] }
+};
+const FP_CAP = 44;
+const PCV_CAP = 90;
+const PCV_FLOOR_PER_PLAYER = 7;
+const MAX_FRANCHISE_TIER = 2;
+const BANK_MAX = 22;
+const ROSTER_MAX = 10;
+const ROSTER_MIN = 8;
+const MAX_YEARS = 3;
+
+async function getSetting(db, key, fallback) {
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first();
+  return row ? row.value : fallback;
+}
+async function leagueState(db) {
+  const season = Number(await getSetting(db, 'season', null)) || await currentSeason(db);
+  const phase = await getSetting(db, 'phase', 'offseason');
+  return { season, phase };
+}
+const setSetting = (db, key, value) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(key, String(value));
+
+const contractEnd = (c) => c.start_season + c.years - 1 + (c.option_status === 'Exercised' ? 1 : 0);
+// Seasons a contract charges FP: active and dead-cap contracts through their end; bought-out ones stop.
+const chargesIn = (c, y) => {
+  if (y < c.start_season) return false;
+  if (c.status === 'Active' || c.status === 'Dead cap') return y <= contractEnd(c);
+  if (c.status === 'Bought out' || c.status === 'Expired' || c.status === 'Ended') return c.ended_season != null && y <= c.ended_season && y <= contractEnd(c);
+  return false;
+};
+const onRosterIn = (c, y) => c.status === 'Active' && y >= c.start_season && y <= contractEnd(c);
+
+// Pure roster check for one franchise's contracts, from `season` through every future contract year.
+// allowedShortfall: how far under the floor the roster already was, so a move that doesn't make it worse is allowed.
+function evaluateRoster(contracts, season, allowedShortfall = 0) {
+  const roster = contracts.filter((c) => onRosterIn(c, season));
+  const size = roster.length;
+  const pcv = roster.reduce((n, c) => n + c.pcv, 0);
+  const franchiseCount = roster.filter((c) => c.tier === 'Franchise').length;
+  const lastYear = Math.max(season, ...contracts.map(contractEnd));
+  const fp = {};
+  for (let y = season; y <= lastYear; y += 1) fp[y] = contracts.filter((c) => chargesIn(c, y)).reduce((n, c) => n + c.fp_cost, 0);
+  const problems = [];
+  const warnings = [];
+  if (size > ROSTER_MAX) problems.push(`${size} rostered players (maximum ${ROSTER_MAX})`);
+  if (pcv > PCV_CAP) problems.push(`PCV ${pcv} is over the ${PCV_CAP} cap`);
+  if (franchiseCount > MAX_FRANCHISE_TIER) problems.push(`${franchiseCount} Franchise-tier players (maximum ${MAX_FRANCHISE_TIER})`);
+  const shortfall = size >= ROSTER_MIN ? Math.max(0, size * PCV_FLOOR_PER_PLAYER - pcv) : 0;
+  if (shortfall > 0 && shortfall > allowedShortfall) problems.push(`PCV ${pcv} is under the ${size * PCV_FLOOR_PER_PLAYER} floor for ${size} players`);
+  else if (shortfall > 0) warnings.push(`PCV ${pcv} is still under the ${size * PCV_FLOOR_PER_PLAYER} floor (no worse than before); fix it before the next game`);
+  if (size < ROSTER_MIN && pcv < size * PCV_FLOOR_PER_PLAYER) warnings.push(`PCV ${pcv} would be under the floor (${size * PCV_FLOOR_PER_PLAYER}); the floor is enforced from ${ROSTER_MIN} players`);
+  for (const [y, total] of Object.entries(fp)) if (total > FP_CAP) problems.push(`Season ${y} FP obligations ${total} are over ${FP_CAP}`);
+  if (size < ROSTER_MIN) warnings.push(`${size} rostered players — at least ${ROSTER_MIN} are required before the first regular-season game`);
+  return { size, pcv, floor: size * PCV_FLOOR_PER_PLAYER, shortfall, franchiseCount, fp, problems, warnings, legal: problems.length === 0 };
+}
+
+async function franchiseContracts(db, franchiseId) {
+  return (await db.prepare("SELECT c.*, p.display_name FROM contracts c LEFT JOIN players p ON p.player_id = c.player_id WHERE c.franchise_id = ? AND c.status IN ('Active', 'Dead cap', 'Bought out')").bind(franchiseId).all()).results ?? [];
+}
+
+async function bankInfo(db, franchiseId, season) {
+  const open = (await db.prepare('SELECT opening_balance FROM fp_bank WHERE franchise_id = ? AND season = ?').bind(franchiseId, season).first())?.opening_balance ?? 0;
+  const spent = await db.prepare("SELECT COALESCE(SUM(from_current), 0) AS cur, COALESCE(SUM(from_bank), 0) AS bank FROM fp_ledger WHERE franchise_id = ? AND season = ? AND kind = 'buyout'").bind(franchiseId, season).first();
+  return { opening: open, buyoutsFromCurrent: spent?.cur ?? 0, buyoutsFromBank: spent?.bank ?? 0, balance: open - (spent?.bank ?? 0) };
+}
+
+function checkText(result, season) {
+  const fpText = Object.entries(result.fp).map(([y, v]) => `S${y} ${v}/${FP_CAP}`).join(' · ');
+  return [
+    `Roster ${result.size}/${ROSTER_MAX} · PCV ${result.pcv}/${PCV_CAP}${result.size >= ROSTER_MIN ? ` (floor ${result.floor})` : ''} · Franchise-tier ${result.franchiseCount}/${MAX_FRANCHISE_TIER}`,
+    `FP: ${fpText || `S${season} 0/${FP_CAP}`}`,
+    result.legal ? '✅ Legal' : `❌ ${result.problems.join('; ')}`,
+    ...result.warnings.map((w) => `⚠️ ${w}`)
+  ].join('\n');
+}
+
+async function capCommand(interaction, env, opts) {
+  const db = requireDb(env);
+  const { season, phase } = await leagueState(db);
+  const franchiseId = opts.franchise ? String(opts.franchise).trim() : await myFranchiseId(db, invokerId(interaction));
+  if (!franchiseId) return 'You aren\'t on a franchise. Add `franchise` to look one up.';
+  const franchise = await franchiseOf(db, franchiseId);
+  if (!franchise) return `No franchise \`${franchiseId}\`.`;
+  const contracts = await franchiseContracts(db, franchiseId);
+  const result = evaluateRoster(contracts, season);
+  const bank = await bankInfo(db, franchiseId, season);
+  const rows = contracts.filter((c) => onRosterIn(c, season) || (c.status === 'Active' && c.start_season > season))
+    .sort((a, b) => b.pcv - a.pcv || b.fp_cost - a.fp_cost)
+    .map((c) => `${String(c.display_name ?? c.player_id).slice(0, 16).padEnd(16)} ${c.tier.slice(0, 11).padEnd(11)} ${String(c.pcv).padStart(3)} ${String(c.fp_cost).padStart(3)}  S${c.start_season}–S${contractEnd(c)}${c.option_status === 'Pending' ? ' +opt' : ''}${c.start_season > season ? ' (next)' : ''}`);
+  const dead = contracts.filter((c) => c.status === 'Dead cap' && contractEnd(c) >= season)
+    .map((c) => `Dead cap: ${c.display_name ?? c.player_id} ${c.fp_cost} FP/season through S${contractEnd(c)}`);
+  return [
+    `**${franchise.name} · Season ${season} (${phase})**`,
+    rows.length ? `\`\`\`\nPlayer           Tier        PCV  FP  Seasons\n${rows.join('\n')}\n\`\`\`` : 'No contracts yet.',
+    ...dead,
+    checkText(result, season),
+    `Bank: ${bank.balance}/${BANK_MAX} FP`
+  ].join('\n').slice(0, 1990);
+}
+
+async function contractCommand(interaction, env, opts) {
+  const db = requireDb(env);
+  const target = opts.player ?? invokerId(interaction);
+  const player = await db.prepare('SELECT * FROM players WHERE discord_id = ?').bind(target).first();
+  if (!player) return 'That member isn\'t on a league roster.';
+  const c = await db.prepare("SELECT * FROM contracts WHERE player_id = ? AND status = 'Active' ORDER BY start_season DESC LIMIT 1").bind(player.player_id).first();
+  if (!c) return `**${player.display_name}** has no active contract (free agent).`;
+  const franchise = await franchiseOf(db, c.franchise_id);
+  return [
+    `**${player.display_name}** · ${franchise?.name ?? c.franchise_id}`,
+    `${c.tier} · ${c.pcv} PCV · ${c.fp_cost} FP per season (${c.fp_source})`,
+    `Seasons ${c.start_season}–${contractEnd(c)}${c.option_status === 'Pending' ? ` · player option for season ${contractEnd(c) + 1} not yet decided` : c.option_status === 'Exercised' ? ' (includes exercised option year)' : c.option_status === 'Declined' ? ' · option declined' : ''}`,
+    'PCV and FP cost are locked for the whole contract.'
+  ].join('\n');
+}
+
+// ---- transactions: every change is previewed, then applied only when the Commissioner presses Approve.
+
+async function proposeTransaction(env, db, me, kind, payload, preview) {
+  const row = await db.prepare("INSERT INTO pending_tx (kind, payload, created_by, created_at, status) VALUES (?, ?, ?, ?, 'Pending') RETURNING id")
+    .bind(kind, JSON.stringify(payload), me, nowIso()).first();
+  return {
+    content: `${preview}\n\nNothing has changed yet. Press **Approve** to record it, or **Cancel**.`.slice(0, 1990),
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, style: 3, label: 'Approve', custom_id: `tx:approve:${row.id}` },
+        { type: 2, style: 2, label: 'Cancel', custom_id: `tx:cancel:${row.id}` }
+      ]
+    }]
+  };
+}
+
+async function playerByDiscord(db, discordId) {
+  return db.prepare('SELECT * FROM players WHERE discord_id = ?').bind(discordId).first();
+}
+async function activeContract(db, playerId) {
+  return db.prepare("SELECT * FROM contracts WHERE player_id = ? AND status = 'Active' ORDER BY start_season DESC LIMIT 1").bind(playerId).first();
+}
+
+async function planSign(db, opts) {
+  const { season, phase } = await leagueState(db);
+  const player = await playerByDiscord(db, opts.player);
+  if (!player) return { error: 'That member isn\'t in the player list yet. Add them with `/drew admin player` first.' };
+  const franchise = await franchiseOf(db, String(opts.franchise).trim());
+  if (!franchise) return { error: `No franchise \`${opts.franchise}\`.` };
+  const tier = TIERS[opts.tier];
+  if (!tier) return { error: 'Choose a tier.' };
+  if (opts.fp_cost < tier.band[0] || opts.fp_cost > tier.band[1]) return { error: `${opts.tier} FP cost must be ${tier.band[0]}–${tier.band[1]}.` };
+  if (opts.player_option && opts.years >= MAX_YEARS) return { error: `A player option can only be added to a 1- or 2-season contract (maximum ${MAX_YEARS} seasons in total).` };
+  const existing = await activeContract(db, player.player_id);
+  // Signing in the offseason starts with the upcoming season; once the season starts, it starts now.
+  const startSeason = season;
+  if (existing && contractEnd(existing) >= startSeason) {
+    const owner = await franchiseOf(db, existing.franchise_id);
+    return { error: `${player.display_name} is under contract with ${owner?.name ?? existing.franchise_id} through season ${contractEnd(existing)}.` };
+  }
+  const contract = {
+    player_id: player.player_id, franchise_id: franchise.franchise_id, tier: opts.tier, pcv: tier.pcv, fp_cost: opts.fp_cost,
+    fp_source: opts.source, start_season: startSeason, years: opts.years, option_status: opts.player_option ? 'Pending' : 'None', status: 'Active'
+  };
+  const current = await franchiseContracts(db, franchise.franchise_id);
+  const result = evaluateRoster([...current, contract], season, evaluateRoster(current, season).shortfall);
+  return { player, franchise, contract, result, season, phase };
+}
+
+async function adminSign(interaction, env, opts) {
+  const db = requireDb(env);
+  const plan = await planSign(db, opts);
+  if (plan.error) return plan.error;
+  const { player, franchise, contract, result, season } = plan;
+  const preview = [
+    `**Signing preview** — ${player.display_name} (${player.player_id}) to **${franchise.name}**`,
+    `${contract.tier} · ${contract.pcv} PCV · ${contract.fp_cost} FP/season (${contract.fp_source}) · seasons ${contract.start_season}–${contractEnd(contract)}${contract.option_status === 'Pending' ? ` + player option for season ${contractEnd(contract) + 1}` : ''}`,
+    `**${franchise.name} after this signing:**`,
+    checkText(result, season),
+    contract.option_status === 'Pending' ? 'Confirm the player has 3 full seasons with this franchise before approving the option.' : null
+  ].filter(Boolean).join('\n');
+  if (!result.legal) return `${preview}\n\nThis signing would make the roster illegal, so it can't be recorded.`;
+  return proposeTransaction(env, db, invokerId(interaction), 'sign', opts, preview);
+}
+
+async function planRelease(db, opts) {
+  const { season, phase } = await leagueState(db);
+  const player = await playerByDiscord(db, opts.player);
+  if (!player) return { error: 'That member isn\'t on a league roster.' };
+  const contract = await activeContract(db, player.player_id);
+  if (!contract) return { error: `${player.display_name} has no active contract.` };
+  const franchise = await franchiseOf(db, contract.franchise_id);
+  const lastGuaranteed = contract.start_season + contract.years - 1 + (contract.option_status === 'Exercised' ? 1 : 0);
+  if (opts.method === 'buyout') {
+    if (phase !== 'offseason') return { error: 'Buyouts are only allowed in the offseason (Rulebook Section 7). Use dead cap, or wait for the season to close.' };
+    const firstUnpaid = Math.max(season, contract.start_season);
+    const seasonsLeft = Math.max(0, lastGuaranteed - firstUnpaid + 1);
+    const cost = Math.ceil((contract.fp_cost * seasonsLeft) / 2);
+    const others = (await franchiseContracts(db, contract.franchise_id)).filter((c) => c.contract_id !== contract.contract_id);
+    const obligations = others.filter((c) => chargesIn(c, season)).reduce((n, c) => n + c.fp_cost, 0);
+    const bank = await bankInfo(db, contract.franchise_id, season);
+    const currentAvailable = Math.max(0, FP_CAP - obligations - bank.buyoutsFromCurrent);
+    const fromCurrent = Math.min(cost, currentAvailable);
+    const fromBank = cost - fromCurrent;
+    if (fromBank > bank.balance) {
+      return { error: `The buyout costs ${cost} FP (half of ${contract.fp_cost} × ${seasonsLeft} remaining seasons, rounded up), but ${franchise?.name} only has ${currentAvailable} unused this season plus ${bank.balance} in the bank. Release with dead cap instead.` };
+    }
+    return { player, contract, franchise, season, cost, fromCurrent, fromBank, seasonsLeft, firstUnpaid };
+  }
+  return { player, contract, franchise, season, lastGuaranteed };
+}
+
+async function adminRelease(interaction, env, opts) {
+  const db = requireDb(env);
+  const plan = await planRelease(db, opts);
+  if (plan.error) return plan.error;
+  const { player, contract, franchise } = plan;
+  const preview = opts.method === 'buyout'
+    ? `**Buyout preview** — ${player.display_name} from **${franchise?.name}**\nCost ${plan.cost} FP: ${plan.fromCurrent} from this season's unused FP and ${plan.fromBank} from the bank. The contract ends and its future FP comes off the cap. The player becomes a free agent.\nReason: ${opts.reason}`
+    : `**Dead-cap release preview** — ${player.display_name} from **${franchise?.name}**\nThe player leaves the roster and becomes a free agent, but ${contract.fp_cost} FP per season stays on ${franchise?.name}'s cap through season ${plan.lastGuaranteed}.\nReason: ${opts.reason}`;
+  return proposeTransaction(env, db, invokerId(interaction), 'release', opts, preview);
+}
+
+function parseIds(text) {
+  return String(text ?? '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+}
+
+async function planTrade(db, opts) {
+  const { season } = await leagueState(db);
+  const a = await franchiseOf(db, String(opts.franchise_a).trim());
+  const b = await franchiseOf(db, String(opts.franchise_b).trim());
+  if (!a || !b) return { error: 'Check both franchise IDs.' };
+  if (a.franchise_id === b.franchise_id) return { error: 'A trade needs two different franchises.' };
+  const idsA = parseIds(opts.players_a);
+  const idsB = parseIds(opts.players_b);
+  if (!idsA.length && !idsB.length) return { error: 'List at least one player.' };
+  const moving = [];
+  for (const [ids, from] of [[idsA, a], [idsB, b]]) {
+    for (const id of ids) {
+      const c = await activeContract(db, id);
+      if (!c || c.franchise_id !== from.franchise_id) return { error: `${id} doesn't have an active contract with ${from.name}.` };
+      moving.push({ ...c, to: from === a ? b.franchise_id : a.franchise_id });
+    }
+  }
+  const after = async (f) => {
+    const all = await franchiseContracts(db, f.franchise_id);
+    const mine = all.filter((c) => !moving.some((m) => m.contract_id === c.contract_id));
+    return evaluateRoster([...mine, ...moving.filter((m) => m.to === f.franchise_id).map((m) => ({ ...m, franchise_id: f.franchise_id }))], season, evaluateRoster(all, season).shortfall);
+  };
+  return { a, b, moving, season, resultA: await after(a), resultB: await after(b) };
+}
+
+async function adminTrade(interaction, env, opts) {
+  const db = requireDb(env);
+  const plan = await planTrade(db, opts);
+  if (plan.error) return plan.error;
+  const { a, b, moving, season, resultA, resultB } = plan;
+  const names = async (list) => (await Promise.all(list.map(async (m) => (await db.prepare('SELECT display_name FROM players WHERE player_id = ?').bind(m.player_id).first())?.display_name ?? m.player_id))).join(', ') || 'nobody';
+  const preview = [
+    '**Trade preview**',
+    `${a.name} sends: ${await names(moving.filter((m) => m.to === b.franchise_id))}`,
+    `${b.name} sends: ${await names(moving.filter((m) => m.to === a.franchise_id))}`,
+    'Contracts move as they are: tier, PCV, FP cost, remaining seasons, and option terms. No FP changes hands.',
+    `**${a.name} after:**\n${checkText(resultA, season)}`,
+    `**${b.name} after:**\n${checkText(resultB, season)}`,
+    'Before approving, confirm both GMs agreed and every traded player consented (the Commissioner handles a GM-player\'s side).'
+  ].join('\n');
+  if (!resultA.legal || !resultB.legal) return `${preview}\n\nThis trade would make a roster illegal, so it can't be recorded.`;
+  return proposeTransaction(env, db, invokerId(interaction), 'trade', opts, preview);
+}
+
+async function planOption(db, opts) {
+  const { season } = await leagueState(db);
+  const player = await playerByDiscord(db, opts.player);
+  if (!player) return { error: 'That member isn\'t on a league roster.' };
+  const contract = await activeContract(db, player.player_id);
+  if (!contract || contract.option_status !== 'Pending') return { error: `${player.display_name} has no undecided player option.` };
+  const franchise = await franchiseOf(db, contract.franchise_id);
+  const result = opts.decision === 'exercise'
+    ? evaluateRoster((await franchiseContracts(db, contract.franchise_id)).map((c) => (c.contract_id === contract.contract_id ? { ...c, option_status: 'Exercised' } : c)), season)
+    : null;
+  return { player, contract, franchise, result, season };
+}
+
+async function adminOption(interaction, env, opts) {
+  const db = requireDb(env);
+  const plan = await planOption(db, opts);
+  if (plan.error) return plan.error;
+  const { player, contract, franchise, result, season } = plan;
+  const preview = opts.decision === 'exercise'
+    ? `**Option preview** — ${player.display_name} exercises the option: contract extends to season ${contractEnd(contract) + 1} at ${contract.fp_cost} FP.\n**${franchise?.name} after:**\n${checkText(result, season)}${result.legal ? '' : "\nThe player's choice stands; the franchise must fix its roster before its next game."}`
+    : `**Option preview** — ${player.display_name} declines the option and becomes a free agent after season ${contractEnd(contract)}.`;
+  return proposeTransaction(env, db, invokerId(interaction), 'option', opts, preview);
+}
+
+async function planSeasonClose(db) {
+  const { season, phase } = await leagueState(db);
+  const contracts = (await db.prepare("SELECT c.*, p.display_name FROM contracts c LEFT JOIN players p ON p.player_id = c.player_id WHERE c.status IN ('Active', 'Dead cap')").all()).results ?? [];
+  const undecided = contracts.filter((c) => c.status === 'Active' && c.option_status === 'Pending' && contractEnd(c) === season);
+  const franchises = (await db.prepare('SELECT * FROM franchises ORDER BY name').all()).results ?? [];
+  const banks = [];
+  for (const f of franchises) {
+    const all = await franchiseContracts(db, f.franchise_id);
+    const obligations = all.filter((c) => chargesIn(c, season)).reduce((n, c) => n + c.fp_cost, 0);
+    const bank = await bankInfo(db, f.franchise_id, season);
+    const unused = Math.max(0, FP_CAP - obligations - bank.buyoutsFromCurrent);
+    banks.push({ franchise: f, obligations, unused, next: Math.min(BANK_MAX, bank.balance + unused), expiresOver: Math.max(0, bank.balance + unused - BANK_MAX) });
+  }
+  const expiring = contracts.filter((c) => contractEnd(c) === season && !(c.option_status === 'Pending'));
+  return { season, phase, undecided, banks, expiring };
+}
+
+async function adminSeason(interaction, env, opts) {
+  const db = requireDb(env);
+  const { season, phase } = await leagueState(db);
+  if (opts.action === 'start') {
+    if (phase === 'in-season') return `Season ${season} has already started.`;
+    const illegal = [];
+    for (const f of (await db.prepare('SELECT * FROM franchises ORDER BY name').all()).results ?? []) {
+      const r = evaluateRoster(await franchiseContracts(db, f.franchise_id), season);
+      if (!r.legal || r.size < ROSTER_MIN) illegal.push(`${f.name}: ${[...r.problems, ...(r.size < ROSTER_MIN ? [`only ${r.size} players`] : [])].join('; ')}`);
+    }
+    const preview = `**Start season ${season}** — FP obligations for season ${season} are charged and buyouts close until the season ends.${illegal.length ? `\n⚠️ Not ready:\n${illegal.join('\n')}` : '\nEvery franchise has a legal roster of at least 8.'}`;
+    return proposeTransaction(env, db, invokerId(interaction), 'season', opts, preview);
+  }
+  if (phase !== 'in-season') return `Season ${season} hasn't started, so it can't be closed. Use \`start\` first.`;
+  const plan = await planSeasonClose(db);
+  if (plan.undecided.length) return `Can't close yet: these player options for season ${season + 1} are undecided: ${plan.undecided.map((c) => c.display_name ?? c.player_id).join(', ')}. Record them with \`/drew admin option\`.`;
+  const preview = [
+    `**Close season ${season}**`,
+    `Expiring contracts (players become free agents): ${plan.expiring.filter((c) => c.status === 'Active').map((c) => c.display_name ?? c.player_id).join(', ') || 'none'}`,
+    'Banked FP for next season (unused this season, capped at 22):',
+    ...plan.banks.map((b) => `• ${b.franchise.name}: used ${b.obligations}/${FP_CAP}, unused ${b.unused} → bank ${b.next}${b.expiresOver ? ` (${b.expiresOver} expires)` : ''}`),
+    `The league moves to season ${season + 1} offseason.`
+  ].join('\n');
+  return proposeTransaction(env, db, invokerId(interaction), 'season', opts, preview);
+}
+
+async function announce(env, text) {
+  try {
+    await postToChannel(env, 'transactions', { content: text.slice(0, 1990), allowed_mentions: { parse: [] } });
+  } catch (error) {
+    console.error(`Transaction post failed: ${error.message}`);
+  }
+}
+
+// Re-check and apply an approved transaction. Returns the text for the preview message.
+async function applyTransaction(env, db, tx, me) {
+  const opts = JSON.parse(tx.payload);
+  const now = nowIso();
+  if (tx.kind === 'sign') {
+    const plan = await planSign(db, opts);
+    if (plan.error) return `Not recorded: ${plan.error}`;
+    if (!plan.result.legal) return `Not recorded: the roster changed and this signing is no longer legal (${plan.result.problems.join('; ')}).`;
+    const c = plan.contract;
+    const row = await db.prepare('INSERT INTO contracts (player_id, franchise_id, tier, pcv, fp_cost, fp_source, start_season, years, option_status, status, signed_at, signed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING contract_id')
+      .bind(c.player_id, c.franchise_id, c.tier, c.pcv, c.fp_cost, c.fp_source, c.start_season, c.years, c.option_status, 'Active', now, me).first();
+    await db.batch([
+      db.prepare('UPDATE players SET franchise_id = ?, updated_at = ? WHERE player_id = ?').bind(c.franchise_id, now, c.player_id),
+      audit(db, me, 'contracts', row.contract_id, 'signed', null, JSON.stringify(c), `Pending transaction #${tx.id}`)
+    ]);
+    await announce(env, `**Signing** · ${plan.player.display_name} → **${plan.franchise.name}** · ${c.tier} · ${c.fp_cost} FP/season · seasons ${c.start_season}–${contractEnd(c)}${c.option_status === 'Pending' ? ' + player option' : ''}`);
+    return `Recorded: ${plan.player.display_name} signed with ${plan.franchise.name}.`;
+  }
+  if (tx.kind === 'release') {
+    const plan = await planRelease(db, opts);
+    if (plan.error) return `Not recorded: ${plan.error}`;
+    const { contract, player, franchise, season } = plan;
+    const statements = [db.prepare('UPDATE players SET franchise_id = NULL, updated_at = ? WHERE player_id = ?').bind(now, player.player_id)];
+    if (opts.method === 'buyout') {
+      statements.push(db.prepare("UPDATE contracts SET status = 'Bought out', ended_season = ?, ended_at = ? WHERE contract_id = ?").bind(plan.firstUnpaid - 1, now, contract.contract_id));
+      statements.push(db.prepare("INSERT INTO fp_ledger (franchise_id, season, kind, amount, from_current, from_bank, note, at) VALUES (?, ?, 'buyout', ?, ?, ?, ?, ?)")
+        .bind(contract.franchise_id, season, plan.cost, plan.fromCurrent, plan.fromBank, `Buyout of ${player.player_id}`, now));
+    } else {
+      statements.push(db.prepare("UPDATE contracts SET status = 'Dead cap', ended_at = ? WHERE contract_id = ?").bind(now, contract.contract_id));
+    }
+    statements.push(audit(db, me, 'contracts', contract.contract_id, 'status', 'Active', opts.method === 'buyout' ? 'Bought out' : 'Dead cap', opts.reason));
+    await db.batch(statements);
+    await announce(env, opts.method === 'buyout'
+      ? `**Buyout** · ${franchise?.name} releases ${player.display_name} for ${plan.cost} FP. ${player.display_name} is a free agent.`
+      : `**Release** · ${franchise?.name} releases ${player.display_name}; ${contract.fp_cost} FP/season stays as dead cap through season ${plan.lastGuaranteed}. ${player.display_name} is a free agent.`);
+    return `Recorded: ${player.display_name} released (${opts.method === 'buyout' ? `buyout ${plan.cost} FP` : 'dead cap'}).`;
+  }
+  if (tx.kind === 'trade') {
+    const plan = await planTrade(db, opts);
+    if (plan.error) return `Not recorded: ${plan.error}`;
+    if (!plan.resultA.legal || !plan.resultB.legal) return 'Not recorded: the rosters changed and this trade is no longer legal.';
+    const statements = [];
+    for (const m of plan.moving) {
+      statements.push(db.prepare('UPDATE contracts SET franchise_id = ? WHERE contract_id = ?').bind(m.to, m.contract_id));
+      statements.push(db.prepare('UPDATE players SET franchise_id = ?, updated_at = ? WHERE player_id = ?').bind(m.to, now, m.player_id));
+      statements.push(audit(db, me, 'contracts', m.contract_id, 'franchise_id', m.franchise_id, m.to, `Trade, pending transaction #${tx.id}`));
+    }
+    await db.batch(statements);
+    const label = async (to) => (await Promise.all(plan.moving.filter((m) => m.to === to).map(async (m) => (await db.prepare('SELECT display_name FROM players WHERE player_id = ?').bind(m.player_id).first())?.display_name ?? m.player_id))).join(', ') || 'nobody';
+    await announce(env, `**Trade** · ${plan.a.name} receive ${await label(plan.a.franchise_id)} · ${plan.b.name} receive ${await label(plan.b.franchise_id)}`);
+    return 'Recorded: trade completed.';
+  }
+  if (tx.kind === 'option') {
+    const plan = await planOption(db, opts);
+    if (plan.error) return `Not recorded: ${plan.error}`;
+    const status = opts.decision === 'exercise' ? 'Exercised' : 'Declined';
+    await db.batch([
+      db.prepare('UPDATE contracts SET option_status = ? WHERE contract_id = ?').bind(status, plan.contract.contract_id),
+      audit(db, me, 'contracts', plan.contract.contract_id, 'option_status', 'Pending', status, null)
+    ]);
+    await announce(env, `**Player option** · ${plan.player.display_name} ${status.toLowerCase()} the option with ${plan.franchise?.name}.`);
+    return `Recorded: option ${status.toLowerCase()}.`;
+  }
+  if (tx.kind === 'season') {
+    const { season, phase } = await leagueState(db);
+    if (opts.action === 'start') {
+      if (phase === 'in-season') return 'Not recorded: the season already started.';
+      await db.batch([setSetting(db, 'season', season), setSetting(db, 'phase', 'in-season'), audit(db, me, 'settings', 'phase', phase, 'in-season', `Season ${season} started`)]);
+      await announce(env, `**Season ${season} has started.** FP obligations are charged and buyouts are closed until the season ends.`);
+      return `Recorded: season ${season} started.`;
+    }
+    if (phase !== 'in-season') return 'Not recorded: the season isn\'t in progress.';
+    const plan = await planSeasonClose(db);
+    if (plan.undecided.length) return 'Not recorded: player options are still undecided.';
+    const statements = [];
+    for (const b of plan.banks) {
+      statements.push(db.prepare('INSERT INTO fp_bank (franchise_id, season, opening_balance) VALUES (?, ?, ?) ON CONFLICT(franchise_id, season) DO UPDATE SET opening_balance = excluded.opening_balance').bind(b.franchise.franchise_id, season + 1, b.next));
+    }
+    for (const c of plan.expiring) {
+      statements.push(db.prepare("UPDATE contracts SET status = ?, ended_season = ?, ended_at = ? WHERE contract_id = ?").bind(c.status === 'Active' ? 'Expired' : 'Ended', season, now, c.contract_id));
+      if (c.status === 'Active') statements.push(db.prepare('UPDATE players SET franchise_id = NULL, updated_at = ? WHERE player_id = ? AND franchise_id = ?').bind(now, c.player_id, c.franchise_id));
+    }
+    statements.push(setSetting(db, 'season', season + 1), setSetting(db, 'phase', 'offseason'));
+    statements.push(audit(db, me, 'settings', 'season', season, season + 1, `Season ${season} closed`));
+    await db.batch(statements);
+    await announce(env, `**Season ${season} is closed.** ${plan.expiring.filter((c) => c.status === 'Active').length} contracts expired and those players are free agents. Season ${season + 1} offseason is open.`);
+    return `Recorded: season ${season} closed; now in the season ${season + 1} offseason.`;
+  }
+  return 'Unknown transaction.';
+}
+
+async function transactionButton(interaction, env, action, txId) {
+  const db = requireDb(env);
+  const me = invokerId(interaction);
+  if (!isCommissioner(await memberRoleNames(interaction, env))) {
+    await followUp(interaction, 'Only the Commissioner can approve transactions.');
+    return;
+  }
+  const tx = await db.prepare('SELECT * FROM pending_tx WHERE id = ?').bind(txId).first();
+  if (!tx || tx.status !== 'Pending') {
+    await editOriginal(interaction, { components: [] });
+    await followUp(interaction, 'This transaction was already handled.');
+    return;
+  }
+  const claimed = await db.prepare("UPDATE pending_tx SET status = 'Processing', decided_by = ?, decided_at = ? WHERE id = ? AND status = 'Pending' RETURNING id").bind(me, nowIso(), txId).first();
+  if (!claimed) return;
+  const original = interaction.message?.content?.replace(/\n\nNothing has changed yet\.[\s\S]*$/, '') ?? '';
+  if (action === 'cancel') {
+    await db.prepare("UPDATE pending_tx SET status = 'Cancelled' WHERE id = ?").bind(txId).run();
+    await editOriginal(interaction, { content: `${original}\n\n**Cancelled.** Nothing was changed.`.slice(0, 1990), components: [] });
+    return;
+  }
+  const result = await applyTransaction(env, db, tx, me);
+  await db.prepare('UPDATE pending_tx SET status = ? WHERE id = ?').bind(result.startsWith('Recorded') ? 'Applied' : 'Failed', txId).run();
+  await editOriginal(interaction, { content: `${original}\n\n**${result}**`.slice(0, 1990), components: [] });
+}
+
 // ---------------------------------------------------------------- admin
 
 const LEAGUE_ONLY_CHECKS = new Set(['Teams identified', 'Crew names', 'Winner matches the report', 'Every gamertag is linked', "Players are on their team's roster"]);
@@ -1955,9 +2495,10 @@ const HELP_TEXT = [
   '`/drew standings` — W–L, on-court games toward the 32 needed, point differential, and the playoff line.',
   '`/drew stats` — your season stats (or pick a player). `/drew leaders` — top 10 in a category.',
   '`/drew eligibility` — your franchise\'s players toward the 10-appearance playoff line.',
+  '`/drew cap` — your franchise\'s contracts, PCV, FP by season, bank, and whether the roster is legal. `/drew contract` — one player\'s contract.',
   '`/drew weekly-slate`, `/drew schedule` — latest posts from those channels.',
   'Committee: `/drew admin forfeit`, `/drew admin credit`.',
-  'Commissioner: `/drew setup-check`, `/drew admin import`, `/drew admin staff`, `/drew admin player`, `/drew admin readtest`, `/drew admin export`, `/drew admin publish`.'
+  'Commissioner: `/drew setup-check`, `/drew admin import`, `/drew admin staff`, `/drew admin player`, `/drew admin readtest`, `/drew admin export`, `/drew admin publish`, `/drew admin sign`/`release`/`trade`/`option`/`season`.'
 ].join('\n');
 
 // ---------------------------------------------------------------- router
@@ -2009,6 +2550,9 @@ export default {
       if (scope === 'rpt' && action === 'confirm') {
         return deferButton(ctx, interaction, () => reportButton(interaction, env, 'confirm', Number(rest[0])));
       }
+      if (scope === 'tx' && ['approve', 'cancel'].includes(action)) {
+        return deferButton(ctx, interaction, async () => { await ensureSchema(requireDb(env)); await transactionButton(interaction, env, action, Number(rest[0])); });
+      }
       if (scope === 'rv' && ['accept', 'recheck', 'reject'].includes(action)) {
         return deferButton(ctx, interaction, () => reviewButton(interaction, env, action, Number(rest[0])));
       }
@@ -2049,6 +2593,8 @@ export default {
     if (command === 'standings') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return standingsCommand(env, opts); });
     if (command === 'stats') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return statsCommand(interaction, env, opts); });
     if (command === 'leaders') return deferEphemeral(ctx, interaction, () => leadersCommand(env, opts));
+    if (command === 'cap') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return capCommand(interaction, env, opts); });
+    if (command === 'contract') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return contractCommand(interaction, env, opts); });
     if (command === 'eligibility') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return eligibilityCommand(interaction, env, opts); });
 
     if (path[0] === 'admin') {
@@ -2061,6 +2607,11 @@ export default {
         }
         if (!isCommissioner(roles)) return 'Admin commands are for the Commissioner role.';
         if (command === 'admin export') return adminExport(env, opts);
+        if (command === 'admin sign') return adminSign(interaction, env, opts);
+        if (command === 'admin release') return adminRelease(interaction, env, opts);
+        if (command === 'admin trade') return adminTrade(interaction, env, opts);
+        if (command === 'admin option') return adminOption(interaction, env, opts);
+        if (command === 'admin season') return adminSeason(interaction, env, opts);
         if (command === 'admin publish') return adminPublish(env, opts);
         if (command === 'admin import') return adminImport(interaction, env, opts);
         if (command === 'admin readtest') return adminReadTest(interaction, env, opts);
