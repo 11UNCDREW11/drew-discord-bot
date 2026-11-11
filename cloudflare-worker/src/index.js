@@ -126,6 +126,36 @@ const commandDefinitions = [
         ]
       },
       { type: 1, name: 'myfixtures', description: "Show your franchise's open fixtures and their IDs" },
+      { type: 1, name: 'standings', description: 'League standings and the playoff line', options: [{ type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }] },
+      {
+        type: 1,
+        name: 'stats',
+        description: "A player's season stats (yours if you leave player empty)",
+        options: [{ type: 6, name: 'player', description: 'Player', required: false }, { type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }]
+      },
+      {
+        type: 1,
+        name: 'leaders',
+        description: 'League leaders in a category',
+        options: [
+          {
+            type: 3, name: 'category', description: 'Category', required: true,
+            choices: [
+              { name: 'Points per game', value: 'pts' }, { name: 'Rebounds per game', value: 'reb' },
+              { name: 'Assists per game', value: 'ast' }, { name: 'Steals per game', value: 'stl' },
+              { name: 'Blocks per game', value: 'blk' }, { name: '3-pointers made per game', value: 'tpm' },
+              { name: 'Effective FG% (eFG%)', value: 'efg' }
+            ]
+          },
+          { type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }
+        ]
+      },
+      {
+        type: 1,
+        name: 'eligibility',
+        description: 'Playoff eligibility: appearances toward the 10-game line',
+        options: [{ type: 3, name: 'franchise', description: 'Franchise ID (default: yours)', required: false, max_length: 40 }, { type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }]
+      },
       {
         type: 1,
         name: 'report',
@@ -182,6 +212,46 @@ const commandDefinitions = [
                 choices: [{ name: 'Haiku 5.5 (cheapest)', value: 'claude-haiku-5-5' }, { name: 'Sonnet 5.5 (stronger)', value: 'claude-sonnet-5-5' }]
               }
             ]
+          },
+          {
+            type: 1,
+            name: 'forfeit',
+            description: 'Committee: record a forfeit or double forfeit',
+            options: [
+              { type: 3, name: 'fixture', description: 'Fixture ID', required: true, max_length: 40 },
+              {
+                type: 3, name: 'forfeiting', description: 'Who forfeits', required: true,
+                choices: [{ name: 'Home team', value: 'home' }, { name: 'Away team', value: 'away' }, { name: 'Both (double forfeit)', value: 'both' }]
+              },
+              { type: 3, name: 'reason', description: 'Short reason for the record', required: true, max_length: 200 }
+            ]
+          },
+          {
+            type: 1,
+            name: 'credit',
+            description: 'Committee: grant a verified ready-team eligibility credit',
+            options: [
+              { type: 6, name: 'player', description: 'Player who was ready', required: true },
+              { type: 3, name: 'fixture', description: 'The forfeited fixture', required: true, max_length: 40 }
+            ]
+          },
+          {
+            type: 1,
+            name: 'export',
+            description: 'Download league data as a CSV file',
+            options: [
+              {
+                type: 3, name: 'kind', description: 'What to export', required: true,
+                choices: [{ name: 'Standings', value: 'standings' }, { name: 'Player season stats', value: 'players' }, { name: 'Every player game line', value: 'games' }]
+              },
+              { type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }
+            ]
+          },
+          {
+            type: 1,
+            name: 'publish',
+            description: 'Post current standings in #standings and leaders in #league-stats',
+            options: [{ type: 4, name: 'season', description: 'Season number (default: current season)', required: false, min_value: 1 }]
           },
           {
             type: 1,
@@ -291,9 +361,22 @@ function deferEphemeral(ctx, interaction, work) {
       console.error(`Command failed: ${error.message}`);
       content = 'Something went wrong on DREW\'s side. Nothing was changed unless a message above says so. Try again, or contact the Commissioner.';
     }
-    await editOriginal(interaction, { content });
+    if (content && typeof content === 'object' && content.file) await editOriginalWithFile(interaction, content);
+    else await editOriginal(interaction, { content });
   })());
   return json({ type: 5, data: { flags: EPHEMERAL } });
+}
+
+// Replace the "thinking…" reply with text plus one attached file (used for CSV exports).
+async function editOriginalWithFile(interaction, { content, file }) {
+  const url = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify({
+    content, allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: file.name }]
+  }));
+  form.append('files[0]', new Blob([file.text], { type: 'text/csv' }), file.name);
+  const response = await fetch(url, { method: 'PATCH', body: form });
+  if (!response.ok) console.error(`File reply could not be delivered; Discord returned HTTP ${response.status}.`);
 }
 
 // Acknowledge a button press now; the work edits the message or sends a private follow-up.
@@ -1256,7 +1339,8 @@ async function ensureSchema(db) {
   if (schemaChecked) return;
   for (const statement of [
     'ALTER TABLE fixtures ADD COLUMN reminders_sent INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE fixtures ADD COLUMN unreported_at TEXT'
+    'ALTER TABLE fixtures ADD COLUMN unreported_at TEXT',
+    'CREATE TABLE IF NOT EXISTS eligibility_credits (player_id TEXT NOT NULL, fixture_id TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, PRIMARY KEY (player_id, fixture_id))'
   ]) {
     try { await db.prepare(statement).run(); } catch { /* column already exists */ }
   }
@@ -1341,6 +1425,312 @@ async function runTimers(env, nowMs = Date.now()) {
 
   if (Object.values(summary).some(Boolean)) console.log('Timer run:', JSON.stringify(summary));
   return summary;
+}
+
+// ---------------------------------------------------------------- standings and stats (step 4)
+// Pure calculations live here so the website can reuse them later.
+
+const PLAYOFF_SPOTS = 6;
+const ON_COURT_NEEDED = 32;
+const APPEARANCES_NEEDED = 10;
+const LEADER_MIN_GP = 5;
+const EFG_MIN_GP = 16;
+const EFG_MIN_FGA = 50;
+
+async function currentSeason(db) {
+  const row = await db.prepare('SELECT MAX(season) AS s FROM fixtures').first();
+  return row?.s ?? 1;
+}
+
+// Which games count, and how, under Rulebook Sections 12 and 14.
+function gameEffect(fx) {
+  if (fx.status === 'Final' && fx.result_type === 'Played') return 'played';
+  if ((fx.status === 'Final' || fx.status === 'Unreported') && fx.result_type === 'Unreported') return 'unreported';
+  if (fx.status === 'Final' && fx.result_type === 'Forfeit') return 'forfeit';
+  if (fx.status === 'Final' && fx.result_type === 'Double forfeit') return 'double';
+  return null;
+}
+
+function computeStandings(fixtures, franchises) {
+  const rows = new Map(franchises.map((f) => [f.franchise_id, {
+    franchise_id: f.franchise_id, name: f.name, gp: 0, w: 0, l: 0, onCourt: 0, pf: 0, pa: 0, scheduled: 0, forfeits: 0
+  }]));
+  const results = [];
+  for (const fx of fixtures) {
+    for (const id of [fx.home_id, fx.away_id]) if (rows.has(id)) rows.get(id).scheduled += 1;
+    const effect = gameEffect(fx);
+    if (!effect) continue;
+    const home = rows.get(fx.home_id);
+    const away = rows.get(fx.away_id);
+    if (!home || !away) continue;
+    home.gp += 1; away.gp += 1;
+    if (effect === 'double') {
+      home.l += 1; away.l += 1; home.forfeits += 1; away.forfeits += 1;
+      continue;
+    }
+    const winner = fx.winner_id === fx.home_id ? home : away;
+    const loser = winner === home ? away : home;
+    winner.w += 1; loser.l += 1;
+    results.push({ winner: winner.franchise_id, loser: loser.franchise_id });
+    if (effect === 'forfeit') loser.forfeits += 1;
+    if (effect === 'played') {
+      home.onCourt += 1; away.onCourt += 1;
+      home.pf += fx.home_score ?? 0; home.pa += fx.away_score ?? 0;
+      away.pf += fx.away_score ?? 0; away.pa += fx.home_score ?? 0;
+    }
+  }
+  const list = [...rows.values()].map((r) => ({ ...r, pct: r.gp ? r.w / r.gp : 0, diff: r.pf - r.pa }));
+  list.sort((a, b) => b.pct - a.pct || b.w - a.w);
+
+  // Tiebreakers among teams with the same record: head-to-head, point differential, points scored.
+  const ordered = [];
+  for (let i = 0; i < list.length;) {
+    let j = i + 1;
+    while (j < list.length && list[j].pct === list[i].pct && list[j].w === list[i].w) j += 1;
+    const group = list.slice(i, j);
+    if (group.length > 1) {
+      const ids = new Set(group.map((g) => g.franchise_id));
+      for (const g of group) {
+        g.h2h = results.filter((r) => ids.has(r.winner) && ids.has(r.loser))
+          .reduce((n, r) => n + (r.winner === g.franchise_id ? 1 : r.loser === g.franchise_id ? -1 : 0), 0);
+      }
+      group.sort((a, b) => b.h2h - a.h2h || b.diff - a.diff || b.pf - a.pf);
+      for (let k = 1; k < group.length; k += 1) {
+        const a = group[k - 1];
+        const b = group[k];
+        if (a.h2h === b.h2h && a.diff === b.diff && a.pf === b.pf) { a.unresolvedTie = true; b.unresolvedTie = true; }
+      }
+    }
+    ordered.push(...group);
+    i = j;
+  }
+
+  // Playoff picture: top six among teams that have (or can still reach) 32 on-court games.
+  let seed = 0;
+  ordered.forEach((r, index) => {
+    r.rank = index + 1;
+    r.remaining = Math.max(0, r.scheduled - r.gp);
+    r.canQualify = r.onCourt + r.remaining >= ON_COURT_NEEDED;
+    r.onCourtMet = r.onCourt >= ON_COURT_NEEDED;
+    r.seed = r.canQualify && seed < PLAYOFF_SPOTS ? (seed += 1) : null;
+  });
+  return ordered;
+}
+
+function formatStandings(rows, season) {
+  if (!rows.length) return 'No franchises yet.';
+  const lines = rows.map((r) => {
+    const tag = r.seed ? `${r.seed <= 2 ? 'bye' : 'in'}` : r.canQualify ? '' : 'out*';
+    return `${String(r.rank).padStart(2)} ${r.name.slice(0, 16).padEnd(16)} ${`${r.w}-${r.l}`.padStart(5)} ${String(r.onCourt).padStart(3)}/${ON_COURT_NEEDED} ${(r.diff > 0 ? `+${r.diff}` : String(r.diff)).padStart(5)} ${tag}${r.unresolvedTie ? ' tie' : ''}`;
+  });
+  const notes = [
+    `Top ${PLAYOFF_SPOTS} with ${ON_COURT_NEEDED}+ on-court games qualify; seeds 1–2 get byes.`,
+    rows.some((r) => !r.canQualify) ? '*out = can no longer reach 32 on-court games.' : null,
+    rows.some((r) => r.unresolvedTie) ? 'tie = still tied after head-to-head, point differential, and points scored; the Commissioner breaks it by public draw.' : null
+  ].filter(Boolean);
+  return `**Season ${season} standings**\n\`\`\`\n #  Team              W-L   Court   Diff\n${lines.join('\n')}\n\`\`\`\n${notes.join('\n')}`;
+}
+
+async function loadSeason(db, season) {
+  const fixtures = (await db.prepare('SELECT * FROM fixtures WHERE season = ?').bind(season).all()).results ?? [];
+  const franchises = (await db.prepare('SELECT * FROM franchises ORDER BY name').all()).results ?? [];
+  return { fixtures, franchises };
+}
+
+async function playerSeasonStats(db, season) {
+  const rows = (await db.prepare(`
+    SELECT pg.player_id, p.display_name, p.discord_id, COALESCE(p.franchise_id, pg.franchise_id) AS franchise_id,
+      COUNT(*) AS gp, SUM(pg.pts) AS pts, SUM(pg.reb) AS reb, SUM(pg.ast) AS ast, SUM(pg.stl) AS stl, SUM(pg.blk) AS blk,
+      SUM(pg.tov) AS tov, SUM(pg.fgm) AS fgm, SUM(pg.fga) AS fga, SUM(pg.tpm) AS tpm, SUM(pg.tpa) AS tpa,
+      SUM(pg.ftm) AS ftm, SUM(pg.fta) AS fta
+    FROM player_games pg
+    JOIN fixtures f ON f.fixture_id = pg.fixture_id
+    LEFT JOIN players p ON p.player_id = pg.player_id
+    WHERE f.season = ? AND f.status = 'Final' AND f.result_type = 'Played'
+    GROUP BY pg.player_id`).bind(season).all()).results ?? [];
+  return rows.map((r) => ({ ...r, efg: r.fga ? (r.fgm + 0.5 * r.tpm) / r.fga : null }));
+}
+
+const perGame = (total, gp) => (gp ? (total / gp).toFixed(1) : '0.0');
+const pctText = (value) => (value == null ? '—' : `${(value * 100).toFixed(1)}%`);
+
+async function eligibilityRows(db, season, franchiseId) {
+  return (await db.prepare(`
+    SELECT p.player_id, p.display_name, p.discord_id,
+      (SELECT COUNT(*) FROM player_games pg JOIN fixtures f ON f.fixture_id = pg.fixture_id
+        WHERE pg.player_id = p.player_id AND f.season = ? AND f.status = 'Final' AND f.result_type = 'Played') AS appearances,
+      (SELECT COUNT(*) FROM eligibility_credits c JOIN fixtures f ON f.fixture_id = c.fixture_id
+        WHERE c.player_id = p.player_id AND f.season = ?) AS credits
+    FROM players p WHERE p.franchise_id = ? ORDER BY p.display_name`).bind(season, season, franchiseId).all()).results ?? [];
+}
+
+async function myFranchiseId(db, discordId) {
+  const staff = await staffFranchises(db, discordId);
+  if (staff.length) return staff[0].franchise_id;
+  return (await db.prepare('SELECT franchise_id FROM players WHERE discord_id = ?').bind(discordId).first())?.franchise_id ?? null;
+}
+
+async function standingsCommand(env, opts) {
+  const db = requireDb(env);
+  const season = opts.season ?? await currentSeason(db);
+  const { fixtures, franchises } = await loadSeason(db, season);
+  return formatStandings(computeStandings(fixtures, franchises), season);
+}
+
+async function statsCommand(interaction, env, opts) {
+  const db = requireDb(env);
+  const season = opts.season ?? await currentSeason(db);
+  const target = opts.player ?? invokerId(interaction);
+  const player = await db.prepare('SELECT * FROM players WHERE discord_id = ?').bind(target).first();
+  if (!player) return target === invokerId(interaction) ? 'You aren\'t on a league roster yet.' : 'That member isn\'t on a league roster.';
+  const s = (await playerSeasonStats(db, season)).find((r) => r.player_id === player.player_id);
+  const elig = (await eligibilityRows(db, season, player.franchise_id ?? '')).find((r) => r.player_id === player.player_id);
+  const franchise = player.franchise_id ? await franchiseOf(db, player.franchise_id) : null;
+  const header = `**${player.display_name}** · ${franchise?.name ?? 'Free agent'}${player.position ? ` · ${player.position}` : ''} · Season ${season}`;
+  if (!s) return `${header}\nNo completed games yet this season.`;
+  const efgNote = s.gp >= EFG_MIN_GP && s.fga >= EFG_MIN_FGA ? '' : ` (qualifies at ${EFG_MIN_GP} GP and ${EFG_MIN_FGA} FGA)`;
+  const appearances = (elig?.appearances ?? s.gp) + (elig?.credits ?? 0);
+  return [
+    header,
+    `GP ${s.gp} · ${perGame(s.pts, s.gp)} PTS · ${perGame(s.reb, s.gp)} REB · ${perGame(s.ast, s.gp)} AST · ${perGame(s.stl, s.gp)} STL · ${perGame(s.blk, s.gp)} BLK · ${perGame(s.tov, s.gp)} TOV`,
+    `FG ${s.fgm}/${s.fga} · 3P ${s.tpm}/${s.tpa} · FT ${s.ftm}/${s.fta} · eFG% ${pctText(s.efg)}${efgNote}`,
+    `Season totals: ${s.pts} PTS, ${s.reb} REB, ${s.ast} AST, ${s.stl} STL, ${s.blk} BLK`,
+    `Playoff eligibility: ${appearances}/${APPEARANCES_NEEDED}${appearances >= APPEARANCES_NEEDED ? ' ✅' : ''}${elig?.credits ? ` (includes ${elig.credits} forfeit credit${elig.credits > 1 ? 's' : ''})` : ''}`
+  ].join('\n');
+}
+
+function leaderList(stats, category) {
+  if (category === 'efg') {
+    return stats.filter((r) => r.gp >= EFG_MIN_GP && r.fga >= EFG_MIN_FGA)
+      .sort((a, b) => b.efg - a.efg).slice(0, 10).map((r) => ({ r, value: pctText(r.efg) }));
+  }
+  return stats.filter((r) => r.gp >= LEADER_MIN_GP)
+    .sort((a, b) => b[category] / b.gp - a[category] / a.gp || b[category] - a[category]).slice(0, 10)
+    .map((r) => ({ r, value: perGame(r[category], r.gp) }));
+}
+
+const CATEGORY_NAMES = { pts: 'Points', reb: 'Rebounds', ast: 'Assists', stl: 'Steals', blk: 'Blocks', tpm: '3-pointers made', efg: 'Effective FG%' };
+
+function formatLeaders(list, category, season, franchiseNames) {
+  const minimum = category === 'efg' ? `${EFG_MIN_GP}+ GP and ${EFG_MIN_FGA}+ FGA` : `${LEADER_MIN_GP}+ GP`;
+  if (!list.length) return `**${CATEGORY_NAMES[category]} leaders · Season ${season}**\nNobody qualifies yet (${minimum}).`;
+  const lines = list.map(({ r, value }, i) => `${String(i + 1).padStart(2)} ${String(r.display_name ?? r.player_id).slice(0, 18).padEnd(18)} ${String(franchiseNames[r.franchise_id] ?? '').slice(0, 12).padEnd(12)} ${String(value).padStart(6)}`);
+  return `**${CATEGORY_NAMES[category]} leaders · Season ${season}** (${minimum}${category === 'efg' ? '' : ', per game'})\n\`\`\`\n${lines.join('\n')}\n\`\`\``;
+}
+
+async function leadersCommand(env, opts) {
+  const db = requireDb(env);
+  const season = opts.season ?? await currentSeason(db);
+  const names = Object.fromEntries(((await db.prepare('SELECT franchise_id, name FROM franchises').all()).results ?? []).map((f) => [f.franchise_id, f.name]));
+  return formatLeaders(leaderList(await playerSeasonStats(db, season), opts.category), opts.category, season, names);
+}
+
+async function eligibilityCommand(interaction, env, opts) {
+  const db = requireDb(env);
+  const season = opts.season ?? await currentSeason(db);
+  const franchiseId = opts.franchise ? String(opts.franchise).trim() : await myFranchiseId(db, invokerId(interaction));
+  if (!franchiseId) return 'You aren\'t on a franchise. Add `franchise` to look one up.';
+  const franchise = await franchiseOf(db, franchiseId);
+  if (!franchise) return `No franchise \`${franchiseId}\`.`;
+  const rows = await eligibilityRows(db, season, franchiseId);
+  if (!rows.length) return `${franchise.name} has no players on its roster yet.`;
+  const lines = rows.map((r) => {
+    const total = r.appearances + r.credits;
+    return `${String(r.display_name).slice(0, 20).padEnd(20)} ${String(total).padStart(2)}/${APPEARANCES_NEEDED}${r.credits ? ` (${r.credits} credit)` : ''} ${total >= APPEARANCES_NEEDED ? 'eligible' : `needs ${APPEARANCES_NEEDED - total}`}`;
+  });
+  return `**${franchise.name} · playoff eligibility · Season ${season}**\n\`\`\`\n${lines.join('\n')}\n\`\`\`\nCompleted games plus verified forfeit credits. Every player needs ${APPEARANCES_NEEDED}; there is no waiver.`;
+}
+
+async function adminForfeit(interaction, env, opts) {
+  const db = requireDb(env);
+  const me = invokerId(interaction);
+  const fixtureId = String(opts.fixture).trim();
+  const fx = await db.prepare('SELECT * FROM fixtures WHERE fixture_id = ?').bind(fixtureId).first();
+  if (!fx) return `No fixture \`${fixtureId}\`.`;
+  if (fx.status === 'Final' || fx.status === 'Reported') {
+    return `\`${fixtureId}\` is ${fx.status.toLowerCase()}. Resolve or reject its report first; forfeits can't overwrite a played result.`;
+  }
+  const both = opts.forfeiting === 'both';
+  const winnerId = both ? null : opts.forfeiting === 'home' ? fx.away_id : fx.home_id;
+  const resultType = both ? 'Double forfeit' : 'Forfeit';
+  const now = nowIso();
+  await db.batch([
+    db.prepare("UPDATE fixtures SET status = 'Final', result_type = ?, winner_id = ?, home_score = NULL, away_score = NULL, updated_at = ? WHERE fixture_id = ?")
+      .bind(resultType, winnerId, now, fixtureId),
+    audit(db, me, 'fixtures', fixtureId, 'result_type', fx.result_type, resultType, opts.reason)
+  ]);
+  const [home, away] = await Promise.all([franchiseOf(db, fx.home_id), franchiseOf(db, fx.away_id)]);
+  const text = both
+    ? `**${fixtureId}** · double forfeit — ${home?.name} and ${away?.name} both take a loss.`
+    : `**${fixtureId}** · ${(opts.forfeiting === 'home' ? home : away)?.name} forfeits — win to ${(opts.forfeiting === 'home' ? away : home)?.name}.`;
+  try {
+    await postToChannel(env, 'game-reports', { content: `${text}\nReason: ${opts.reason}${both ? '' : '\nReady players may request a playoff-eligibility credit with a locker-room screenshot.'}`, allowed_mentions: { parse: [] } });
+  } catch (error) {
+    console.error(`Forfeit post failed: ${error.message}`);
+  }
+  return `Recorded: ${text}`;
+}
+
+async function adminCredit(interaction, env, opts) {
+  const db = requireDb(env);
+  const me = invokerId(interaction);
+  const fixtureId = String(opts.fixture).trim();
+  const fx = await db.prepare('SELECT * FROM fixtures WHERE fixture_id = ?').bind(fixtureId).first();
+  if (!fx || fx.result_type !== 'Forfeit') return `\`${fixtureId}\` isn't a single-team forfeit, so no credit applies (none for double forfeits).`;
+  const player = await db.prepare('SELECT * FROM players WHERE discord_id = ?').bind(opts.player).first();
+  if (!player) return 'That member isn\'t on a league roster.';
+  if (player.franchise_id !== fx.winner_id) return `${player.display_name} isn't on the ready team for \`${fixtureId}\`.`;
+  const existing = await db.prepare('SELECT 1 FROM eligibility_credits WHERE player_id = ? AND fixture_id = ?').bind(player.player_id, fixtureId).first();
+  if (existing) return `${player.display_name} already has a credit for \`${fixtureId}\`.`;
+  await db.batch([
+    db.prepare('INSERT INTO eligibility_credits (player_id, fixture_id, granted_by, granted_at) VALUES (?, ?, ?, ?)').bind(player.player_id, fixtureId, me, nowIso()),
+    audit(db, me, 'eligibility_credits', `${player.player_id}:${fixtureId}`, 'credit', null, 1, 'Ready-team forfeit credit verified')
+  ]);
+  return `Credit recorded for ${player.display_name} (\`${fixtureId}\`). It counts toward playoff eligibility only, not games played or stats.`;
+}
+
+const csvCell = (v) => {
+  const text = v == null ? '' : String(v);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+const toCsv = (header, rows) => [header.join(','), ...rows.map((r) => header.map((h) => csvCell(r[h])).join(','))].join('\n');
+
+async function adminExport(env, opts) {
+  const db = requireDb(env);
+  const season = opts.season ?? await currentSeason(db);
+  let text;
+  if (opts.kind === 'standings') {
+    const { fixtures, franchises } = await loadSeason(db, season);
+    const rows = computeStandings(fixtures, franchises).map((r) => ({ ...r, pct: r.pct.toFixed(3), seed: r.seed ?? '', unresolved_tie: r.unresolvedTie ? 'yes' : '' }));
+    text = toCsv(['rank', 'franchise_id', 'name', 'gp', 'w', 'l', 'pct', 'onCourt', 'forfeits', 'pf', 'pa', 'diff', 'remaining', 'seed', 'unresolved_tie'], rows);
+  } else if (opts.kind === 'players') {
+    const rows = (await playerSeasonStats(db, season)).map((r) => ({ ...r, efg: r.efg == null ? '' : r.efg.toFixed(3) }));
+    text = toCsv(['player_id', 'display_name', 'franchise_id', 'gp', 'pts', 'reb', 'ast', 'stl', 'blk', 'tov', 'fgm', 'fga', 'tpm', 'tpa', 'ftm', 'fta', 'efg'], rows);
+  } else {
+    const rows = (await db.prepare(`
+      SELECT f.season, f.week, pg.fixture_id, pg.player_id, p.display_name, pg.franchise_id, pg.pts, pg.reb, pg.ast, pg.stl, pg.blk, pg.tov,
+        pg.fgm, pg.fga, pg.tpm, pg.tpa, pg.ftm, pg.fta, pg.fouls
+      FROM player_games pg JOIN fixtures f ON f.fixture_id = pg.fixture_id LEFT JOIN players p ON p.player_id = pg.player_id
+      WHERE f.season = ? AND f.status = 'Final' AND f.result_type = 'Played' ORDER BY f.week, pg.fixture_id, pg.franchise_id`).bind(season).all()).results ?? [];
+    text = toCsv(['season', 'week', 'fixture_id', 'player_id', 'display_name', 'franchise_id', 'pts', 'reb', 'ast', 'stl', 'blk', 'tov', 'fgm', 'fga', 'tpm', 'tpa', 'ftm', 'fta', 'fouls'], rows);
+  }
+  const lines = text.split('\n').length - 1;
+  return { content: `Season ${season} ${opts.kind} export: ${lines} row${lines === 1 ? '' : 's'}.`, file: { name: `season${season}-${opts.kind}.csv`, text } };
+}
+
+async function adminPublish(env, opts) {
+  const db = requireDb(env);
+  const season = opts.season ?? await currentSeason(db);
+  const { fixtures, franchises } = await loadSeason(db, season);
+  await postToChannel(env, 'standings', {
+    content: `${formatStandings(computeStandings(fixtures, franchises), season)}\nUpdated <t:${unix(nowIso())}:f>`.slice(0, 1990),
+    allowed_mentions: { parse: [] }
+  });
+  const stats = await playerSeasonStats(db, season);
+  const names = Object.fromEntries(franchises.map((f) => [f.franchise_id, f.name]));
+  const blocks = ['pts', 'reb', 'ast'].map((c) => formatLeaders(leaderList(stats, c).slice(0, 5), c, season, names));
+  await postToChannel(env, 'league-stats', { content: blocks.join('\n').slice(0, 1990), allowed_mentions: { parse: [] } });
+  return 'Posted standings in #standings and points/rebounds/assists leaders in #league-stats.';
 }
 
 // ---------------------------------------------------------------- admin
@@ -1562,8 +1952,12 @@ const HELP_TEXT = [
   '`/drew myfixtures` — your franchise\'s open fixtures, their IDs, and agreed times.',
   '`/drew gametime` — captains/GMs propose a game\'s start time; the other franchise confirms. The 24-hour report window counts from the agreed time.',
   '`/drew report` — winning captain/GM attaches the Game Stats screenshot within 24 hours. DREW reads the stats, checks them, and posts a card; the other team can Confirm or Dispute.',
+  '`/drew standings` — W–L, on-court games toward the 32 needed, point differential, and the playoff line.',
+  '`/drew stats` — your season stats (or pick a player). `/drew leaders` — top 10 in a category.',
+  '`/drew eligibility` — your franchise\'s players toward the 10-appearance playoff line.',
   '`/drew weekly-slate`, `/drew schedule` — latest posts from those channels.',
-  'Commissioner: `/drew setup-check`, `/drew admin import`, `/drew admin staff`, `/drew admin player`, `/drew admin readtest`.'
+  'Committee: `/drew admin forfeit`, `/drew admin credit`.',
+  'Commissioner: `/drew setup-check`, `/drew admin import`, `/drew admin staff`, `/drew admin player`, `/drew admin readtest`, `/drew admin export`, `/drew admin publish`.'
 ].join('\n');
 
 // ---------------------------------------------------------------- router
@@ -1652,10 +2046,22 @@ export default {
     if (command === 'myfixtures') return deferEphemeral(ctx, interaction, () => myFixtures(interaction, env));
     if (command === 'gametime') return deferEphemeral(ctx, interaction, () => gameTime(interaction, env, opts));
     if (command === 'report') return deferEphemeral(ctx, interaction, () => submitReport(interaction, env, opts));
+    if (command === 'standings') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return standingsCommand(env, opts); });
+    if (command === 'stats') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return statsCommand(interaction, env, opts); });
+    if (command === 'leaders') return deferEphemeral(ctx, interaction, () => leadersCommand(env, opts));
+    if (command === 'eligibility') return deferEphemeral(ctx, interaction, async () => { await ensureSchema(env.DB); return eligibilityCommand(interaction, env, opts); });
 
     if (path[0] === 'admin') {
       return deferEphemeral(ctx, interaction, async () => {
-        if (!(await requireCommissioner(interaction, env))) return 'Admin commands are for the Commissioner role.';
+        await ensureSchema(requireDb(env));
+        const roles = await memberRoleNames(interaction, env);
+        if (['admin forfeit', 'admin credit'].includes(command)) {
+          if (!isReviewer(roles)) return 'Forfeits and credits are for the Commissioner and the League Committee.';
+          return command === 'admin forfeit' ? adminForfeit(interaction, env, opts) : adminCredit(interaction, env, opts);
+        }
+        if (!isCommissioner(roles)) return 'Admin commands are for the Commissioner role.';
+        if (command === 'admin export') return adminExport(env, opts);
+        if (command === 'admin publish') return adminPublish(env, opts);
         if (command === 'admin import') return adminImport(interaction, env, opts);
         if (command === 'admin readtest') return adminReadTest(interaction, env, opts);
         if (command === 'admin staff') return adminStaff(interaction, env, opts);
