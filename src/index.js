@@ -1,7 +1,3 @@
-// DREW — league assistant for Discord, running as a Cloudflare Worker.
-// Build step 1: league database, gamertag linking with review, fixture import,
-// and agreed game times. Game-report intake arrives in step 2.
-
 const REQUIRED_ROLES = ['commissioner', 'gm', 'captain', 'freeagent', 'player'];
 const REQUIRED_CHANNELS = [
   'welcome', 'rules', 'announcements', 'generalchat', 'schedule', 'standings',
